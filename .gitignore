@@ -1,0 +1,32 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+log/
+pastlog/
+image_std/
+img_process/
+.python-version
+vae.py
+images/
+debug.py
+# Virtual environments
+*.venv
+*.pt
+*.mp4
+*.pth
+*.jpg
+*.png
+*.csv
+*.jpg
+figure/
+image_hidden/
+model/
+output/
+data/
+phoneme2img/log/
+phoneme2img/model/
+phoneme2img/output/
