@@ -41,9 +41,9 @@ batch_size=8
 # train_dataloader=DataLoader(train_lang,batch_size=batch_size, shuffle=True,drop_last=True)
 # valid_lang=ImageLang( '../code/dataset/imageono/onomatope/train/train_image_onomatope.csv',"../code/dataset/imageono/image/valid",transform)
 # valid_dataloader=DataLoader(valid_lang,batch_size=batch_size, shuffle=False,drop_last=True)
-train_dataset=ImageDataset("texturedata/images/train",transform)
+train_dataset=ImageDataset("/workspace/mycode/aihara/aihara/img2img/texturedata/images/train",transform)
 train_dataloader=DataLoader(train_dataset,batch_size=batch_size,shuffle=True,drop_last=True)
-valid_dataset=ImageDataset("texturedata/images/valid",transform)
+valid_dataset=ImageDataset("/workspace/mycode/aihara/aihara/img2img/texturedata/images/valid",transform)
 valid_dataloader=DataLoader(valid_dataset,batch_size=batch_size,shuffle=False,drop_last=True)
 
 learning_rate=1e-3
@@ -64,14 +64,14 @@ num=0 #1,2,3は学習率1e-6 1,2はStyleLossのみ 4はグラム行列を正し�
 #29はTextureNetにLayerNormを行う作業を追加、出力はtanhで-1~1に
 save=True
 if save:    
-    prompt_model_save_path=f"model/prompt_converter_{num}"
-    img_model_save_path=f"model/img_model_{num}"
-    writer = SummaryWriter(log_dir=f"log/stable{num}")
+    prompt_model_save_path=f"/workspace/mycode/aihara/aihara/phoneme2img/model/prompt_converter_{num}"
+    img_model_save_path=f"/workspace/mycode/aihara/aihara/phoneme2img/model/img_model_{num}"
+    writer = SummaryWriter(log_dir=f"/workspace/mycode/aihara/aihara/img2img/log/stable{num}")
     
 try:
     if loadnum is not None:  # loadnum が定義されていて None でないことを確認
-        image_model.load_state_dict(torch.load(f"model/img_model_{loadnum}.pth"))
-        prompt_converter.load_state_dict(torch.load(f"model/prompt_converter_{loadnum}.pth"))
+        image_model.load_state_dict(torch.load(f"/workspace/mycode/aihara/aihara/phoneme2img/model/img_model_{loadnum}.pth"))
+        prompt_converter.load_state_dict(torch.load(f"/workspace/mycode/aihara/aihara/phoneme2img/model/prompt_converter_{loadnum}.pth"))
 except NameError:
     pass  # loadnum が定義されていない場合は何もしない
 
@@ -127,9 +127,11 @@ for epoch in range(epochs):
                     batch_gram_loss[name]=0
                 batch_gram_loss[name] +=diff.item()
 
-
             prompt_optimizer.step() 
-        save_path=f"img_process/model_{num}/train/{epoch}epoch/"
+
+        save_path=f"/workspace/mycode/aihara/aihara/img2img/img_process/model_{num}/train/{epoch}epoch/"
+        
+        
         if not os.path.exists(save_path):
             os.makedirs(save_path)            
         for i in range(train_dataloader.batch_size):

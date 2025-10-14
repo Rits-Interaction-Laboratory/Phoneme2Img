@@ -1634,7 +1634,7 @@ class StableDiffusionPipeline(
         # latents=torch.load("latents_float32_4_batch.pt").to(device)
         
         # torch.save(latents,"latents_bfloat16_1_batch.pt")
-        latents=torch.load("dataset/noise/latents_bfloat16_1_batch.pt").to(device)
+        latents=torch.load("/workspace/mycode/aihara/aihara/phoneme2img/dataset/noise/latents_bfloat16_1_batch.pt").to(device)
     # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)

@@ -24,11 +24,11 @@ import matplotlib.pyplot as plt
 from net import VGGFeatures
 from utils import gram_matrix
 def criterion_VAE(target, ave, log_dev, ave_p, log_dev_p): #VAEの再構成とKLDを含めたLoss
-
     num_batch=target.size(1) #バッチサイズを取得
     num_sample=target.size(0) #複数のサンプルをアウトプットしているのでその数を取得
     # --- 再構成誤差（ガウス仮定の負の対数尤度） ---
-    recon_element = 0.5 * (log_dev_p+(target - ave_p)**2 / torch.exp(log_dev_p)) 
+    # recon_element = 0.5 * (log_dev_p+(target - ave_p)**2 / torch.exp(log_dev_p)) 
+    recon_element = 0.5 * (log_dev_p + torch.exp(-log_dev_p) * (target - ave_p)**2)
     recon_loss = recon_element.sum()
     # --- KLダイバージェンス ---
     kl_element = 0.5 * (torch.exp(log_dev) + ave**2 - 1.0 - log_dev)

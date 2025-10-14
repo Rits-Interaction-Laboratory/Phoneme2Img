@@ -28,6 +28,10 @@ from dataset import ImageLang,Lang
 from lossfunc import style_loss_and_diffs,criterion_VAE,criterion_PCAVAE
 from utils import select_top_k_outputs,tensorFromSentence
 
+
+from utils import set_seed
+
+
 def Train(encoder,decoder,image_model,prompt_converter,phonemevae,pipe,lang,imageono_dataloader,ono_dataloader,device):
     encoder.train()
     decoder.train()
@@ -57,7 +61,7 @@ def Train(encoder,decoder,image_model,prompt_converter,phonemevae,pipe,lang,imag
 
     SOS_token = 0
     EOS_token = 1
-    learning_rate = 1e-3
+    learning_rate = 1e-5
     ono_weight=0 #オノマトペ音素列復元のLossに対する重み
     image_weight=1 #画像復元のLossに対する重み
 
@@ -68,7 +72,7 @@ def Train(encoder,decoder,image_model,prompt_converter,phonemevae,pipe,lang,imag
 
     encoder_optimizer = optim.Adam( encoder.parameters(), lr=learning_rate )
     decoder_optimizer = optim.Adam( decoder.parameters(), lr=learning_rate )
-    image_optimizer=optim.Adam(image_model.parameters(), lr=learning_rate) #学習率は標準で10e-4
+    image_optimizer=optim.Adam(image_model.parameters(), lr=learning_rate) #学習率は標準で1e-4
     prompt_optimizer=optim.Adam(prompt_converter.parameters(), lr=learning_rate)
     phonemevae_optimizer=optim.Adam(phonemevae.parameters(),lr=learning_rate)
     
@@ -76,16 +80,20 @@ def Train(encoder,decoder,image_model,prompt_converter,phonemevae,pipe,lang,imag
     imageono_iterator=iter(imageono_dataloader) #画像と音素がバインドされたデータセットのイテレータ
     max_iter=max(len(phoneme_iterator),len(imageono_iterator)) #max_iterは長さが大きいデータセットにあわされる今回だとimageono_dataloaderであわされる
     resize_transform=transforms.Resize((64,64))
+
+    all_decoded = {}
+
     for count in tqdm.tqdm(range(len(imageono_iterator))):
         batch_total_loss=0    
-        
         encoder_optimizer.zero_grad()
         decoder_optimizer.zero_grad()
-        # image_optimizer.zero_grad()
+        image_optimizer.zero_grad()
         # prompt_optimizer.zero_grad()
-        phonemevae_optimizer.zero_grad()
+        phonemevae_optimizer.zero_grad()     
+        
+        
         for j in range(imageono_dataloader.batch_size): #batchサイズ分行う
-
+            
     # #--------------------------------------------------------------------------音素復元単体(imageono_dataloaderの音素列のみでは14単語しかないので297単語学習するためのコード)            
     #         try:
 
@@ -145,17 +153,26 @@ def Train(encoder,decoder,image_model,prompt_converter,phonemevae,pipe,lang,imag
                 # loss_img=loss_img *image_weight
     #----------------------------------------------------------　音素復元
                 PHONEME2_tensor=tensorFromSentence(lang,PHONEME[0],EOS_token,device)
+                #print("PHONEME:", PHONEME)
                 ENCODER_hidden=encoder.initHidden().to(device)
                 INPUT_length  = PHONEME2_tensor.size(0)  
+                
+                
                 for i in range( INPUT_length ): #input_length（単語の長さ）の回数分繰り返す、つまりencoder_hiddenが一音素ごとに更新されていく。これが終わったencode_hiddenは一単語を網羅して考慮された特徴ベクトルとなる
                     encoder_output, ENCODER_hidden = encoder( PHONEME2_tensor[ i ], ENCODER_hidden ) #i番目のデータをエンコーダに投げる、このデータのラベルさえわかれば・・・！！  
+                
+                
                 # Decoder phese
                 loss_ONO = 0 #seq2seqのloss
                 decoder_input  = torch.tensor( [ [ SOS_token ] ] ).to(device)
                 decoder_hidden = ENCODER_hidden
+
+                #decoded_words  = []
+                
+                
                 for i in range( INPUT_length ):
                     decoder_output, decoder_hidden = decoder( decoder_input, decoder_hidden ) 
-                        
+                    
                     decoder_input = PHONEME2_tensor[ i ] #次の音素（インデックス）をセットしておく
                 
                     if random.random() < 0.5: 
@@ -164,9 +181,30 @@ def Train(encoder,decoder,image_model,prompt_converter,phonemevae,pipe,lang,imag
                     loss_ONO += criterion( decoder_output, PHONEME2_tensor[ i ] ) #入力となる音素とデコーダのアウトプットから得られる音素の確率密度を計算
                     topv, topi = decoder_output.data.topk(1)
 
-                    if topi.item() == EOS_token: break #decoder_inputの中がEOSだったらここで終了
-                train_ONO_loss += loss_ONO.item()
-                loss_ONO=loss_ONO*ono_weight
+                    if topi.item() == EOS_token: 
+                        #decoded_words.append('<EOS>')
+                        
+                        # if decode_print_count % 50 == 0:
+                        #     #print("phoneme      :", PHONEME[0])
+                        #     #print("decoded words:", decoded_words)
+                        #     decoded_words_list.append((PHONEME[0], decoded_words))
+
+                        #all_decoded[PHONEME[0]] = decoded_words.copy()
+                        break #decoder_inputの中がEOSだったらここで終了
+                    # else:
+                    #     decoded_words.append(lang.index2word[topi.item()])
+
+
+                train_ONO_loss += loss_ONO.item() #train_ono_loss = train_ONO_loss + loss_ONO.item()と同義
+                #loss_ONOは0ではないが、ここでtrain_ONO_lossが0になる。
+                # print("loss_ONO tensor:", loss_ONO)
+                # print("loss_ONO.item():", loss_ONO.item())
+                # print("train_ONO_loss:", train_ONO_loss) 
+                
+                #loss_ONO=loss_ONO*ono_weight
+                #print(loss_ONO)
+                
+                
     #----------------------------------------------------------------　２つを近づける
                 
                 loss_imgono=0 #特徴ベクトルを近づけるloss
@@ -189,14 +227,37 @@ def Train(encoder,decoder,image_model,prompt_converter,phonemevae,pipe,lang,imag
                 batch_total_loss+=total_loss #こいつは1バッチ処理するたびに0に初期化される
                 total_loss=0
                 loss=0
+                
+                
+
             except StopIteration:
                 imageono_iterator=iter(imageono_dataloader)
+
         batch_total_loss.backward()
         encoder_optimizer.step()
         decoder_optimizer.step()
-        # image_optimizer.step()
-        # prompt_optimizer.step()
+        image_optimizer.step()
+        #prompt_optimizer.step()
         phonemevae_optimizer.step()
+
+
+    #sorted_decoded_words_list = sorted(decoded_words_list, key=lambda x: x[0])
+    # ← tqdmループの外
+    # print("\n=== Decoded ===")
+    # for i, (phoneme, decoded) in enumerate(sorted_decoded_words_list):
+    #     print(f"[{i}] phoneme: {phoneme}")
+    #     print(f"    decoded: {decoded}")
+    # print("=========================")
+    # ループ終了後（エポック終了後）に必ず print
+    
+    # print("\n========== Train Decoded words ==========")
+    # for phoneme in sorted(all_decoded.keys()):
+    #     print(f"phoneme: {phoneme}")
+    #     print(f"decoded: {all_decoded[phoneme]}")
+    # print("==========================================")
+    
+
+
 
     train_ono_loss=train_ono_loss/(max_iter*(imageono_dataloader.batch_size)) #ミニバッチ*イテレータの数で割ることで1データ当たりのLossの値を算出
     train_ONO_loss=train_ONO_loss/(max_iter*(imageono_dataloader.batch_size))
@@ -213,13 +274,140 @@ def Train(encoder,decoder,image_model,prompt_converter,phonemevae,pipe,lang,imag
     train_mse_loss=train_mse_loss/(max_iter*(imageono_dataloader.batch_size))
 
 
-    return train_ono_loss,train_ONO_loss,train_img_loss,train_imgono_loss,train_recon_hidden_loss,train_kl_loss,train_total_loss,train_recon_loss,train_sq_error_loss,train_log_var_loss,train_var_loss,train_nll_per_loss,train_mse_loss,encoder,decoder,image_model,prompt_converter,phonemevae
+    return train_ono_loss,train_ONO_loss,train_img_loss,train_imgono_loss,train_recon_hidden_loss,train_kl_loss,train_total_loss,train_recon_loss,train_sq_error_loss,train_log_var_loss,train_var_loss,train_nll_per_loss,train_mse_loss,encoder,decoder,image_model,prompt_converter,phonemevae   , all_decoded
+
+
+def Valid(encoder, decoder, image_model, prompt_converter, phonemevae, pipe, lang, imageono_valid_dataloader, device):
+    encoder.eval()
+    decoder.eval()
+    image_model.eval()
+    phonemevae.eval()
+
+    valid_ono_loss = 0
+    valid_ONO_loss = 0
+    valid_img_loss = 0
+    valid_imgono_loss = 0
+    valid_recon_hidden_loss = 0
+    valid_kl_loss = 0
+    valid_total_loss = 0
+    valid_recon_loss = 0
+    valid_sq_error_loss = 0
+    valid_log_var_loss = 0
+    valid_var_loss = 0
+    valid_nll_per_loss = 0
+    valid_mse_loss = 0
+
+    SOS_token = 0
+    EOS_token = 1
+
+    criterion = nn.CrossEntropyLoss()
+    mse = nn.MSELoss()
+    cos = nn.CosineEmbeddingLoss()
+
+    imageono_iterator = iter(imageono_valid_dataloader)
+    max_iter = len(imageono_valid_dataloader)
+
+    valid_all_decoded = {}
+
+    with torch.no_grad():
+        for count in tqdm.tqdm(range(max_iter)):
+            try:
+                IMG, PATH, ONO, PHONEME, IMG_HIDDEN = next(imageono_iterator)
+                IMG_HIDDEN = IMG_HIDDEN[0].to(device)
+                IMG_tensor = IMG[0].to(device)
+                size = 64
+                IMG_input = IMG_tensor.view(-1, 3, size, size)
+
+                # 画像モデルの出力と特徴変換
+                hidden = image_model(IMG_input)
+                my_hidden = prompt_converter(hidden)
+                my_hidden = my_hidden.to(dtype=torch.bfloat16).requires_grad_(False)  # 勾配計算なし
+
+                # 音素列テンソル化
+                PHONEME2_tensor = tensorFromSentence(lang, PHONEME[0], EOS_token, device)
+                ENCODER_hidden = encoder.initHidden().to(device)
+                INPUT_length = PHONEME2_tensor.size(0)
+
+                for i in range(INPUT_length):
+                    encoder_output, ENCODER_hidden = encoder(PHONEME2_tensor[i], ENCODER_hidden)
+
+                # デコーダーの音素列復元 loss 計算
+                loss_ONO = 0
+                decoder_input = torch.tensor([[SOS_token]]).to(device)
+                decoder_hidden = ENCODER_hidden
+
+                valid_decoded_words  =[]
+
+
+                for i in range(INPUT_length):
+                    decoder_output, decoder_hidden = decoder(decoder_input, decoder_hidden)
+                    decoder_input = PHONEME2_tensor[i]
+
+                    if random.random() < 0.5:
+                        topv, topi = decoder_output.topk(1)
+                        decoder_input = topi.squeeze().detach()
+                    loss_ONO += criterion(decoder_output, PHONEME2_tensor[i])
+                    topv, topi = decoder_output.data.topk(1)
+                    
+                    if topi.item() == EOS_token:
+                        valid_decoded_words.append('<EOS>')
+                        valid_all_decoded[PHONEME[0]] = valid_decoded_words.copy()
+                        break
+                    else:
+                        valid_decoded_words.append(lang.index2word[topi.item()])
+
+                valid_ONO_loss += loss_ONO.item()
+                loss_ONO = loss_ONO * 0  # ここはTrainで0だったので0に合わせる
+
+                # 2つのモーダルの距離を縮める VAE loss
+                ENCODER_hidden = ENCODER_hidden.squeeze(1)
+                mu_p, log_var_p, z, mu, log_var = phonemevae(ENCODER_hidden)
+                best_outputs, my_hidden, log_var_p = select_top_k_outputs(my_hidden, mu_p, log_var_p, top_k=80)
+                loss_imgono, recon_loss, kl_loss, sq_error, log_var_l, var, nll_per, mse_loss = criterion_VAE(my_hidden, mu, log_var, best_outputs, log_var_p)
+
+                valid_recon_loss += recon_loss.item()
+                valid_sq_error_loss += sq_error.item()
+                valid_log_var_loss += log_var_l.item()
+                valid_var_loss += var.item()
+                valid_nll_per_loss += nll_per.item()
+                valid_imgono_loss += loss_imgono.item()
+                valid_kl_loss += kl_loss.item()
+                valid_mse_loss += mse_loss.item()
+
+                total_loss = loss_imgono
+                valid_total_loss += total_loss.item()
+
+            except StopIteration:
+                imageono_iterator = iter(imageono_valid_dataloader)
+
+    # 平均を計算（バッチサイズは1の想定ならこのまま）
+    valid_ono_loss=valid_ono_loss/(max_iter*(imageono_valid_dataloader.batch_size)) #ミニバッチ*イテレータの数で割ることで1データ当たりのLossの値を算出
+    valid_ONO_loss=valid_ONO_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_img_loss=valid_img_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_recon_hidden_loss=valid_recon_hidden_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_imgono_loss=valid_imgono_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_kl_loss=valid_kl_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_total_loss=valid_total_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_recon_loss=valid_recon_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_sq_error_loss=valid_sq_error_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_log_var_loss=valid_log_var_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_var_loss=valid_var_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_nll_per_loss=valid_nll_per_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+    valid_mse_loss=valid_mse_loss/(max_iter*(imageono_valid_dataloader.batch_size))
+
+
+    return valid_ono_loss, valid_ONO_loss, valid_img_loss, valid_imgono_loss, valid_recon_hidden_loss, valid_kl_loss, valid_total_loss, valid_recon_loss, valid_sq_error_loss, valid_log_var_loss, valid_var_loss, valid_nll_per_loss, valid_mse_loss  , valid_all_decoded
+
 
 
 def main():
 
+
+    # 実行時に最初に呼び出す
+    set_seed(100)
+    
     device = 'cuda:1' if torch.cuda.is_available() else 'cpu'
-    nums=113#モデル番号
+    nums=2080 #モデル番号
     #107はlr=1e-3,画像のオートエンコーダも一緒に学習
     #108はlr=1e-3,画像のオートエンコーダは固定
     #109はStableDiffusionに通して画像のオートエンコーダも学習
@@ -231,7 +419,7 @@ def main():
     prompt_converter=PromptEncoder().to(device)
     phonemevae=PhonemeVAE(num_samples=100).to(device)
 
-    epochs=2000
+    epochs=500
     save_loss=10000
     embedding_size = 128
     hidden_size   = 128
@@ -243,36 +431,93 @@ def main():
     augment=True
     transform = transforms.Compose([transforms.Resize((img_size, img_size)),transforms.ToTensor()])
 
-    prompt_converter.load_state_dict(torch.load(f"model/prompt_converter.pth"))
-    image_model.load_state_dict(torch.load(f"model/img_model.pth"))
-    encoder.load_state_dict( torch.load( "model/phonemeencoder.pth" ) ) #読み込み
-    decoder.load_state_dict( torch.load( "model/phonemedecoder.pth" ) )  
+    os.makedirs(f"model/{nums}", exist_ok=True)
+        #os.makedirs(f"model/{nums}/phonemeencoder", exist_ok=True)
+        #os.makedirs(f"model/{nums}/phonemedecoder", exist_ok=True)
+        #os.makedirs(f"model/{nums}/image_model", exist_ok=True)
+        #os.makedirs(f"model/{nums}/prompt_converter", exist_ok=True)
+        #os.makedirs(f"model/{nums}/phonemevae", exist_ok=True)
+
+    prompt_converter.load_state_dict(torch.load(f"/workspace/mycode/aihara/aihara/phoneme2img/model/prompt_converter.pth"))
+    image_model.load_state_dict(torch.load(f"/workspace/mycode/aihara/aihara/phoneme2img/model/img_model.pth"))
+    encoder.load_state_dict( torch.load( "/workspace/mycode/aihara/aihara/phoneme2img/model/phonemeencoder.pth" ) ) #読み込み
+    decoder.load_state_dict( torch.load( "/workspace/mycode/aihara/aihara/phoneme2img/model/phonemedecoder.pth" ) )  
     #---------stablediffusionのパイプラインの用意 
     model_id = "dream-textures/texture-diffusion"
     pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16) 
     pipe = pipe.to(device)
 
     #--------データセットの用意    
-    lang  = Lang( 'dataset/onomatope/dictionary.csv') #オノマトペ音素の辞書
-    imageono_train_dataset=ImageLang('dataset/imageono/onomatope/train/train_image_onomatope.csv',"dataset/imageono/image/train","dataset/image_hidden/model29",transform)
+    lang  = Lang( '/workspace/mycode/aihara/aihara/phoneme2img/dataset/onomatope/dictionary.csv') #オノマトペ音素の辞書
+    imageono_train_dataset=ImageLang('/workspace/mycode/aihara/aihara/phoneme2img/dataset/imageono/onomatope/train/train_image_onomatope.csv',"/workspace/mycode/aihara/aihara/phoneme2img/dataset/imageono/image/train","dataset/image_hidden/model29",transform)
     imageono_train_dataloader = DataLoader(imageono_train_dataset, batch_size=batch_size, shuffle=True,drop_last=True) #drop_lastをtrueにすると最後の中途半端に入っているミニバッチを排除してくれる
-    imageono_valid_dataset=ImageLang('dataset/imageono/onomatope/train/train_image_onomatope.csv',"dataset/imageono/image/valid","dataset/image_hidden/model29",transform)
+    imageono_valid_dataset=ImageLang('/workspace/mycode/aihara/aihara/phoneme2img/dataset/imageono/onomatope/train/train_image_onomatope.csv',"/workspace/mycode/aihara/aihara/phoneme2img/dataset/imageono/image/valid","/workspace/mycode/aihara/aihara/phoneme2img/dataset/image_hidden/model29",transform)
     imageono_valid_dataloader=DataLoader(imageono_valid_dataset, batch_size=batch_size, shuffle=False,drop_last=True)
 
     #--------------オノマトペ音素単体のデータセット    
-    ono_train_dataset  = Lang( 'dataset/onomatope/dictionary.csv',augment)
+    ono_train_dataset  = Lang( '/workspace/mycode/aihara/aihara/phoneme2img/dataset/onomatope/dictionary.csv',augment)
     ono_train_dataloader=DataLoader(ono_train_dataset,batch_size=batch_size, shuffle=True,drop_last=True)
-    ono_valid_dataset=Lang('dataset/onomatope/onomatopeunknown.csv')
+    ono_valid_dataset=Lang('/workspace/mycode/aihara/aihara/phoneme2img/dataset/onomatope/onomatopeunknown.csv')
     ono_valid_dataloader=DataLoader(ono_valid_dataset,batch_size=batch_size,shuffle=False,drop_last=True)    
-    writer=SummaryWriter(log_dir=f"log/crossmodalstable_{nums}")
+    writer=SummaryWriter(log_dir=f"/workspace/mycode/aihara/aihara/phoneme2img/log/crossmodalstable_{nums}")
+
+    logfile = f"/workspace/mycode/aihara/aihara/phoneme2img/output/{nums}/{nums}_decoded_words_log.txt"
+
+    with open(logfile, "w") as f:
+        f.write("")
 
     for epoch in range(epochs):
         
-        train_ono,train_ONO,train_img,train_imgono,train_recon_hidden_loss,train_kl,train_total,train_recon_loss,train_sq_error_loss,train_log_var_loss,train_var_loss,train_nll_per_loss,train_mse_loss,encoder,decoder,image_model,prompt_converter,phonemevae=Train(encoder,decoder,image_model,prompt_converter,phonemevae,pipe,lang,imageono_train_dataloader,ono_train_dataloader,device)
-        print( "[epoch num %d ] [ train_mse: %f]" % ( epoch+1, train_imgono) )
+        #--------train
+        train_ono,train_ONO,train_img,train_imgono,train_recon_hidden_loss,train_kl,train_total,train_recon_loss,train_sq_error_loss,train_log_var_loss,train_var_loss,train_nll_per_loss,train_mse_loss,encoder,decoder,image_model,prompt_converter,phonemevae , all_decoded =Train(encoder,decoder,image_model,prompt_converter,phonemevae,pipe,lang,imageono_train_dataloader,ono_train_dataloader,device)
+        
+        #--------validation
+        valid_ono_loss, valid_ONO_loss, valid_img_loss, valid_imgono_loss, valid_recon_hidden_loss, valid_kl_loss, valid_total_loss, valid_recon_loss, valid_sq_error_loss, valid_log_var_loss, valid_var_loss, valid_nll_per_loss, valid_mse_loss , valid_all_decoded = Valid(encoder, decoder, image_model, prompt_converter, phonemevae, pipe, lang, imageono_valid_dataloader, device)
 
-        #trainのみ
-        writer.add_scalars('loss/ono', {'train': train_ono}, epoch+1)
+        #--------print
+        print( "[epoch num %d ] [ train_mse: %.6f] [val_mse: %.6f] [val_total_loss: %.6f]" % ( epoch+1, train_imgono, valid_imgono_loss, valid_total_loss) )
+
+        #--------decoded_words
+        # # エポック毎にprintと保存
+        # header = f"========= Epoch{epoch} Decoded words ========="
+        # #print("\n" + header)
+        # output_lines = [header]
+
+        # for phoneme in sorted(all_decoded.keys()):
+        #     line1 = f"phoneme: {phoneme}"
+        #     line2 = f"decoded: {all_decoded[phoneme]}"
+        #     #print(line1)
+        #     #print(line2)
+        #     output_lines.append(line1)
+        #     output_lines.append(line2)
+
+        # output_lines.append("=" * 40)
+
+        # with open(logfile, "a") as f:
+        #     f.write("\n".join(output_lines) + "\n")
+        
+        
+        if (epoch + 1) % 50 == 0:
+            output_lines = []
+            output_lines.append(f"=== Epoch{epoch+1} decoded words ===")
+
+            output_lines.append("---- Train")
+            for phoneme in sorted(all_decoded.keys()):
+                output_lines.append(f"phoneme: {phoneme}")
+                output_lines.append(f"decoded: {all_decoded[phoneme]}")
+
+            output_lines.append("---- Valid")
+            for phoneme in sorted(valid_all_decoded.keys()):
+                output_lines.append(f"phoneme: {phoneme}")
+                output_lines.append(f"decoded: {valid_all_decoded[phoneme]}")
+
+            output_lines.append("=" * 40)
+
+            with open(logfile, "a") as f:
+                f.write("\n".join(output_lines) + "\n")
+
+        #train
+        writer.add_scalars('loss/ono', {'train': train_ONO}, epoch+1)
         writer.add_scalars('loss/img', {'train': train_img}, epoch+1)
         writer.add_scalars('loss/recon_hidden', {'train': train_recon_hidden_loss}, epoch+1)
         writer.add_scalars('loss/imgono', {'train': train_imgono}, epoch+1)
@@ -284,10 +529,29 @@ def main():
         writer.add_scalars('loss/var', {'train': train_var_loss}, epoch+1)
         writer.add_scalars('loss/nll_per', {'train': train_nll_per_loss}, epoch+1)
         writer.add_scalars('loss/mse', {'train': train_mse_loss}, epoch+1)
+
+        #valid
+        writer.add_scalars('loss/ono', {'valid': valid_ONO_loss}, epoch+1)
+        writer.add_scalars('loss/img', {'valid': valid_img_loss}, epoch+1)
+        writer.add_scalars('loss/recon_hidden', {'valid': valid_recon_hidden_loss}, epoch+1)
+        writer.add_scalars('loss/imgono', {'valid': valid_imgono_loss}, epoch+1)
+        writer.add_scalars('loss/kl', {'valid': valid_kl_loss}, epoch+1)
+        writer.add_scalars('loss/total', {'valid': valid_total_loss}, epoch+1)
+        writer.add_scalars('loss/recon', {'valid': valid_recon_loss}, epoch+1)
+        writer.add_scalars('loss/sq_error', {'valid': valid_sq_error_loss}, epoch+1)
+        writer.add_scalars('loss/log_var', {'valid': valid_log_var_loss}, epoch+1)
+        writer.add_scalars('loss/var', {'valid': valid_var_loss}, epoch+1)
+        writer.add_scalars('loss/nll_per', {'valid': valid_nll_per_loss}, epoch+1)
+        writer.add_scalars('loss/mse', {'valid': valid_mse_loss}, epoch+1)
         
-        if not os.path.exists(f"model/{nums}"):
-            os.makedirs(f"model/{nums}")
-        torch.save(encoder.state_dict(), f'model/{nums}/phonemeencoder_{nums}.pth')
+        os.makedirs(f"model/{nums}", exist_ok=True)
+        #os.makedirs(f"model/{nums}/phonemeencoder", exist_ok=True)
+        #os.makedirs(f"model/{nums}/phonemedecoder", exist_ok=True)
+        #os.makedirs(f"model/{nums}/image_model", exist_ok=True)
+        #os.makedirs(f"model/{nums}/prompt_converter", exist_ok=True)
+        #os.makedirs(f"model/{nums}/phonemevae", exist_ok=True)
+
+        torch.save(encoder.state_dict(), f'model/{nums}/phonemeencoder_{nums}.pth') #state_dictでencoderの状態を保存
         torch.save(decoder.state_dict(), f'model/{nums}/phonemedecoder_{nums}.pth')
         torch.save(image_model.state_dict(),f"model/{nums}/image_model_{nums}.pth")
         torch.save(prompt_converter.state_dict(),f"model/{nums}/prompt_converter_{nums}.pth")

@@ -77,7 +77,7 @@ def ono_to_ono(sentence,encoder,decoder,lang):
     EOS_token = 1    
     input_tensor   = tensorFromSentence(lang, sentence)
     input_length   = input_tensor.size()[0]
-    encoder_hidden = encoder.initHidden()
+    encoder_hidden = encoder.initHidden(device)
     
     for ei in range(input_length):
         encoder_output, encoder_hidden = encoder(input_tensor[ei], encoder_hidden)
@@ -97,6 +97,10 @@ def ono_to_ono(sentence,encoder,decoder,lang):
             decoded_words.append(lang.index2word[topi.item()])
 
         decoder_input = topi.squeeze().detach()
+
+    print("sentence: ",sentence)
+    print("decoded:  ", decoded_words)
+
     return decoded_words,encoder_hidden
 
 def get_phoneme_hidden(encoder,decoder,lang):
@@ -107,7 +111,7 @@ def get_phoneme_hidden(encoder,decoder,lang):
     for i in range(2,len(lang.index2word)):
         input_tensor   = tensorFromSentence(lang, lang.index2word[i])
         input_length   = input_tensor.size()[0]
-        encoder_hidden = encoder.initHidden()
+        encoder_hidden = encoder.initHidden(input_tensor.device)
         word_list.append(lang.index2word[i])
 
         for ei in range(input_length):
@@ -188,7 +192,7 @@ if __name__ == '__main__':
     with torch.no_grad():
         SOS_token = 0
         EOS_token = 1
-        device = "cuda" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = "cuda:1" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
         batch_size =8
         num=40 #入出力として使える音素の数=データセット内の.n_wordsに等しい
         embedding_size = 128
@@ -198,9 +202,11 @@ if __name__ == '__main__':
         
         #データセットの準備
         transform = transforms.Compose([transforms.Resize((size, size)), transforms.ToTensor()])
-        lang  = Lang( 'dataset/onomatope/dictionary.csv')
+        #lang  = Lang( 'dataset/onomatope/dictionary.csv')
+        lang  = Lang( 'dataset/dictionary.csv')
         # train_lang  = Lang( 'dataset/onomatope/onomatope.csv')
-        valid_lang  = Lang( 'dataset/onomatope/onomatopeunknown.csv')
+        #valid_lang  = Lang( 'dataset/onomatope/onomatopeunknown.csv')
+        valid_lang  = Lang( 'dataset/onomatopeunknown.csv')
 
         train_dataloader = DataLoader(lang, batch_size=batch_size, shuffle=False,drop_last=True) #drop_lastをtruenにすると最後の中途半端に入っているミニバッチを排除してくれる
         valid_dataloader=DataLoader(valid_lang,batch_size=batch_size, shuffle=False,drop_last=True)
@@ -216,10 +222,21 @@ if __name__ == '__main__':
         encoder.eval()
         decoder.eval()
         dataloader=valid_dataloader
-        sentence="h o q k o r i"
+        # sentence="a m i a m i"
+
+        while True:
+            # ユーザーに入力を求める
+            sentence = input("input onomatope_phoneme (q=exit) : ")
+
+            ono_word,_=ono_to_ono(sentence,encoder,decoder,lang)
+            #print(ono_word)
+
+            # 'Q' が押されたらループを抜ける
+            if sentence.lower() == "q":
+                break
 
         phoneme_numpy,word_list=get_phoneme_hidden(encoder,decoder,lang)
         myPCA(phoneme_numpy,word_list)
-        ono_word,_=ono_to_ono(sentence,encoder,decoder,lang)
-        print(ono_word)
+        #ono_word,_=ono_to_ono(sentence,encoder,decoder,lang)
+        #print(ono_word)
         # print(calc_accu(encoder,decoder,dataloader,lang))

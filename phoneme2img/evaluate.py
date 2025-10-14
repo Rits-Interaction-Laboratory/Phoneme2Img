@@ -39,6 +39,11 @@ from lossfunc import style_loss_and_diffs
 from net import Encoder,Decoder,PromptEncoder,PhonemeVAE,TextureNet
 from dataset import ImageLang,Lang,tensorFromSentence
 
+from utils import set_seed
+
+#set_seed(100)
+
+
 #-------音素列生成の評価
 def levenshtein_distance(s1, s2):
     if len(s1) < len(s2):
@@ -48,6 +53,7 @@ def levenshtein_distance(s1, s2):
         return len(s1)
 
     previous_row = range(len(s2) + 1) #s2の音素数＋1をpreviousにする
+
     for i, c1 in enumerate(s1): #s1の各音素がどうなるかs2の各音素でチェックする
         current_row = [i + 1]
 
@@ -55,56 +61,78 @@ def levenshtein_distance(s1, s2):
             insertions = previous_row[j + 1] + 1
             deletions = current_row[j] + 1
             substitutions = previous_row[j] + (c1 != c2) #Trueなら1をFalseなら0を返す
-
             current_row.append(min(insertions, deletions, substitutions))
+
         previous_row = current_row
 
     return previous_row[-1]
-def is_close_match(s1, s2, tolerance=2):
+
+def is_close_match(s1, s2, tolerance=1):
     return levenshtein_distance(s1, s2) <= tolerance
-def calc_accu(encoder,decoder,dataloader,lang,EOS_token,device):
+
+def calc_accu(encoder,decoder,dataloader,lang,SOS_token,EOS_token,device):
     score=0
     count=0
+    ld_values = []
     for batch_num,(ono,phoneme) in enumerate(dataloader):  
         for data_num in range(dataloader.batch_size):           
-            ono_word,encoder_hidden=ono_to_ono(phoneme[data_num],encoder,decoder,lang,EOS_token,device)
+            ono_word,encoder_hidden=ono_to_ono(phoneme[data_num],encoder,decoder,lang,SOS_token,EOS_token,device)
 
-            word=[x.replace("<EOS>","") for x in ono_word]
-            word=[x+' 'for x in word] #1音素ずつに半角の空白を追加
-            word[-1]=word[-1].strip() #最後の音素の後ろの空白だけ消す
-            word=''.join(word) #リストになってたものを１つの単語にする
- 
+            # word=[x.replace("<EOS>","") for x in ono_word]
+            # word=[x+' 'for x in word] #1音素ずつに半角の空白を追加
+            # word[-1]=word[-1].strip() #最後の音素の後ろの空白だけ消す
+            word=[x for x in ono_word if x != '<EOS>']
+            word=' '.join(word) #リストになってたものを１つの単語にする
+
             if is_close_match(phoneme[data_num],word):
                 score+=1
 
             count+=1
-    return (score/count)
-def calc_img2ono_accu(image_model,decoder,dataloader,lang,EOS_token,device):
+
+            ld = levenshtein_distance(phoneme[data_num],word)
+            ld_values.append(ld)
+    # print("score: ", score)
+    # print("count: ", count)
+
+    calc_accu = score / count
+
+    return calc_accu, ld_values
+
+def calc_img2ono_accu(image_model,decoder,dataloader,lang,SOS_token,EOS_token,device):
     score=0
     count=0
+    img2ono_ld_values = []
     for batch_num,(img,_,_,phoneme,_) in enumerate(dataloader):  
         for data_num in range(dataloader.batch_size):           
-            img_word,_=img_to_ono(img[data_num],image_model,decoder,lang)
+            img_word,_=img_to_ono(img[data_num],image_model,decoder,lang,SOS_token,EOS_token,device)
             
-            word=[x.replace("<EOS>","") for x in img_word]
-            word=[x+' 'for x in word] #1音素ずつに半角の空白を追加
-            word[-1]=word[-1].strip() #最後の音素の後ろの空白だけ消す
-            word=''.join(word) #リストになってたものを１つの単語にする
+            # word=[x.replace("<EOS>","") for x in img_word]
+            # word=[x+' 'for x in word] #1音素ずつに半角の空白を追加
+            # word[-1]=word[-1].strip() #最後の音素の後ろの空白だけ消す
+            word=[x for x in img_word if x != '<EOS>']
+            word=' '.join(word) #リストになってたものを１つの単語にする
 
             if is_close_match(phoneme[data_num],word):
                 score+=1
             count+=1
-    return (score/count)
+
+            ld = levenshtein_distance(phoneme[data_num],word)
+            img2ono_ld_values.append(ld)
+    # print("score: ", score)
+    # print("count: ", count)
+    calc_img2ono_accu = score / count
+    return calc_img2ono_accu, img2ono_ld_values
 #-----------------------------------------------
 
 def img_to_ono(img,image_model,decoder,lang,SOS_token,EOS_token,device):
-    img_input=img.view(-1,3,size,size).to(device)
-    img_hidden=image_model(img_input)   
+    img_input=img.view(-1,3,size,size).to(device)  
+    img_hidden=image_model(img_input)
     img_hidden=img_hidden.view(1,1,128) #画像の特徴ベクトルをオノマトペの隠れベクトルの大きさに合わせる
     decoder_input      = torch.tensor([[SOS_token]], device=device)  # SOS
     decoder_hidden     = img_hidden
     decoded_words      = []
     max_length=20
+
     for di in range(max_length):
         decoder_output, decoder_hidden = decoder( decoder_input, decoder_hidden )
         topv, topi = decoder_output.data.topk(1) #topiはアウトプットの中から最も確率の高いラベル（音素のインデックス番号）取り出す
@@ -113,24 +141,40 @@ def img_to_ono(img,image_model,decoder,lang,SOS_token,EOS_token,device):
             break
         else:
             decoded_words.append(lang.index2word[topi.item()]) 
+        
+    # print(decoded_words)
 
-        decoder_input = topi.squeeze().detach()
     return decoded_words,img_hidden
+
 def ono_to_ono(sentence,encoder,decoder,lang,SOS_token,EOS_token,device):
     max_length=20
-    input_tensor   = tensorFromSentence(lang, sentence,EOS_token,device)
-    input_length   = input_tensor.size()[0]
-    encoder_hidden = encoder.initHidden().to(device)
+    input_tensor   = tensorFromSentence(lang, sentence,EOS_token,device) #sentenceをtensorに
+    input_length   = input_tensor.size()[0] #tensorの長さ
+    encoder_hidden = encoder.initHidden().to(device) #encoder_hiddenの初期値
+
     for ei in range(input_length):
-        encoder_output, encoder_hidden = encoder(input_tensor[ei], encoder_hidden)
+        encoder_output, encoder_hidden = encoder(input_tensor[ei], encoder_hidden) 
+
+        # vec = encoder_hidden.squeeze().cpu().detach().numpy()
+        # plt.figure(figsize=(10, 1))
+        # plt.imshow([vec], aspect='auto', cmap='viridis')
+        # plt.colorbar()
+        # plt.title(f"Encoder hidden state (index {ei})")
+        # plt.xlabel("Hidden dimension index")
+        # plt.yticks([])
+
+        # # ファイル保存
+        # plt.savefig(f"figure/{nums}/hidden_state_amiami_{ei}.png", bbox_inches='tight')
+        # plt.close()  # 忘れずに閉じる
+
+    
     decoder_input      = torch.tensor([[SOS_token]], device=device)  # SOS
     decoder_hidden     = encoder_hidden
     decoded_words      = []
 
     for di in range(max_length):
         decoder_output, decoder_hidden = decoder( decoder_input, decoder_hidden )
-
-            
+          
         topv, topi = decoder_output.data.topk(1)
         if topi.item() == EOS_token:
             decoded_words.append('<EOS>')
@@ -139,32 +183,53 @@ def ono_to_ono(sentence,encoder,decoder,lang,SOS_token,EOS_token,device):
             decoded_words.append(lang.index2word[topi.item()])
 
         decoder_input = topi.squeeze().detach()
-    return decoded_words,encoder_hidden
 
+    # print(sentence)
+    # print(decoded_words)
+
+    
+    return decoded_words,encoder_hidden
 
 
 def generate_stable_images(encoder,pipe,prompt_converter,phonemevae,lang,sentence,step,model_num,EOS_token):
     encoder_hidden_numpy=None
+
+
     for i in range(step):
         input_tensor   = tensorFromSentence(lang, sentence,EOS_token,device)
-        input_length   = input_tensor.size()[0]
         encoder_hidden = encoder.initHidden().to(device)
-        
+        input_length   = input_tensor.size()[0]
+
         for ei in range(input_length):
             encoder_output, encoder_hidden = encoder(input_tensor[ei], encoder_hidden)
+        
         encoder_hidden=encoder_hidden.view(-1,128)  
+        encoder_hidden=encoder_hidden.squeeze(1)
         my_hidden,_,_,_,_=phonemevae(encoder_hidden)
-        my_hidden=my_hidden.to(dtype=torch.bfloat16).requires_grad_(False).squeeze(0)
-        image,torchimage = pipe(prompt_embeds=my_hidden)
+        
+        # my_hidden=prompt_converter(my_hidden)
+
+        my_hidden=my_hidden.to(dtype=torch.bfloat16).requires_grad_(False).squeeze(1)
+        # print(my_hidden.shape)
+        my_hidden =F.normalize(my_hidden, p=2, dim=-1)
+        my_hidden = torch.nn.functional.layer_norm(my_hidden, my_hidden.shape[-1:])
+        image,torchimage = pipe(prompt_embeds=my_hidden.detach())
+
+        # print("my_hidden:",my_hidden)
+        # print("Batch", i, "mean:", my_hidden.mean().item(), "std:", my_hidden.std().item())
+        
         if not os.path.exists(f"output/{model_num}/"):
             os.makedirs(f"output/{model_num}/")
         image[0].save(f"output/{model_num}/{sentence}{i}.png")
         encoder_hidden=encoder_hidden.view(1,128).to('cpu').numpy()  
+    
+    
     # 連結処理 PhonemeEncoderから得られる128次元の特徴ベクトルを返す
         if encoder_hidden_numpy is None:
             encoder_hidden_numpy = encoder_hidden
         else:
             encoder_hidden_numpy = np.concatenate((encoder_hidden_numpy, encoder_hidden), axis=0)
+    
     return encoder_hidden_numpy
                    
 def calc_gram(image_model,device): #2つのグラム行列の差を計算する関数
@@ -196,6 +261,9 @@ def calc_gram(image_model,device): #2つのグラム行列の差を計算する�
 
 
 def evaluate(encoder,decoder,image_model,pipe,prompt_converter,phonemevae,nums,device):
+
+    #set_seed(100)
+
     with torch.no_grad():
         SOS_token = 0
         EOS_token = 1
@@ -209,9 +277,9 @@ def evaluate(encoder,decoder,image_model,pipe,prompt_converter,phonemevae,nums,d
         transform = transforms.Compose([transforms.Resize((size, size)), transforms.ToTensor()])
         lang=Lang('dataset/onomatope/dictionary.csv')
         train_lang  = ImageLang( 'dataset/imageono/onomatope/train/train_image_onomatope.csv',"dataset/imageono/image/train","dataset/image_hidden/model29",transform)
-        valid_lang  = ImageLang( 'dataset/imageono/onomatope/train/train_image_onomatope.csv',"dataset/imageono/image/valid","dataset/image_hidden/model29",transform)
+        valid_lang  = ImageLang( 'dataset/imageono/onomatope/train/train_image_onomatope.csv',"dataset/imageono/image/train","dataset/image_hidden/model29",transform)
         
-        train_dataloader = DataLoader(train_lang, batch_size=batch_size, shuffle=False,drop_last=True) #drop_lastをtruenにすると最後の中途半端に入っているミニバッチを排除してくれる
+        train_dataloader = DataLoader(train_lang, batch_size=batch_size, shuffle=False,drop_last=True) #drop_lastをtrueにすると最後の中途半端に入っているミニバッチを排除してくれる
         valid_dataloader=DataLoader(valid_lang,batch_size=batch_size, shuffle=False,drop_last=True)
 
         ono_train_dataloader=DataLoader(lang,batch_size=batch_size,shuffle=False,drop_last=True)    
@@ -233,9 +301,10 @@ def evaluate(encoder,decoder,image_model,pipe,prompt_converter,phonemevae,nums,d
         phoneme_hidden_numpy=np.zeros((len(dataloader),dataloader.batch_size,78848))
         pca_phoneme_batch_numpy=np.zeros((len(dataloader),dataloader.batch_size,100))
         count=1
+
         while True:
             # ユーザーに入力を求める
-            sentence = input("input onomatope_phoneme（q=exit）: ")
+            sentence = input("input onomatope_phoneme (q=exit) : ")
 
             # 'Q' が押されたらループを抜ける
             if sentence.lower() == "q":
@@ -243,24 +312,46 @@ def evaluate(encoder,decoder,image_model,pipe,prompt_converter,phonemevae,nums,d
 
             # 画像生成関数を実行
             _ = generate_stable_images(encoder, pipe, prompt_converter, phonemevae, lang, 
-                                    sentence=sentence, step=10, model_num=nums, EOS_token=EOS_token)
+                                    sentence=sentence, step=5, model_num=nums, EOS_token=EOS_token)
+            
+            decoded,encoder_hidden_2=ono_to_ono(sentence,encoder,decoder,lang,SOS_token,EOS_token,device)
+            print("input  : ",sentence)
+            word=[x for x in decoded if x != '<EOS>']
+            word=' '.join(word)
+            print("decoded: ",word)
+
         for batch_num,(img,path,ono,phoneme,IMG_HIDDEN) in tqdm.tqdm(enumerate(dataloader),total=len(dataloader)): #プログレスバーあり
-            for data_num in range(dataloader.batch_size):      
+            for data_num in range(dataloader.batch_size):
                 IMG_HIDDEN=IMG_HIDDEN[data_num].to(device)
                 img_data=img[data_num].to(device)
                 img_data=img_data.view(-1,3,size,size)
                 output_batch=image_model(img_data)
                 my_hidden=prompt_converter(output_batch)
-                my_hidden=my_hidden.to(dtype=torch.bfloat16)          
+                my_hidden=my_hidden.to(dtype=torch.bfloat16)         
                 
         
                 img_word,img_hidden=img_to_ono(img[data_num],image_model,decoder,lang,SOS_token,EOS_token,device) #画像の隠れベクトルからオノマトペを生成             
                 ono_word,encoder_hidden=ono_to_ono(phoneme[data_num],encoder,decoder,lang,SOS_token,EOS_token,device)
                 encoder_hidden=encoder_hidden.squeeze(0)
                 mu_p,log_var_p,z,mu,log_var=phonemevae(encoder_hidden)
-
-                word_list.append(ono[data_num]) #オノマトペの単語をリストにアペンド（主成分分析のラベルとして使う）
                 
+                
+                # print(phoneme[data_num])
+                # print(ono[data_num])
+                # print(encoder_hidden)  
+                
+                # print(img[data_num])
+                # print(id(img_hidden))
+                
+                # print(ono_word) #いけてる
+                # print(img_word) #1080でも2080でもいけてない
+                
+                word_list.append(ono[data_num]) #オノマトペの単語をリストにアペンド（主成分分析のラベルとして使う）
+
+
+                
+                # print("decoded:",ono_word)
+
                 #画像のPathのリストを作成
                 filename = path[data_num].split('/')[-1]  # ファイル名を取得
                 basename = filename.split('.')[0]  # 拡張子を除いた名前を取得
@@ -275,23 +366,54 @@ def evaluate(encoder,decoder,image_model,pipe,prompt_converter,phonemevae,nums,d
                     wordcount+=1 #wordをカウントしておくデータセットを変更しなければ14単語になるはず
                 #-------------------------------------------
 
-
-
             
             img_batch_numpy[batch_num]=img_hidden.view(-1,128).to('cpu').numpy() 
             ono_batch_numpy[batch_num]=encoder_hidden.view(-1,128).to('cpu').numpy()  
             hidden_batch_numpy[batch_num]=my_hidden.view(1,-1).to("cpu").to(torch.float32).numpy()
             phoneme_hidden_numpy[batch_num]=mu_p.view(1,-1).to("cpu").to(torch.float32).numpy()
             mu_batch_numpy[batch_num]=mu.view(-1,128).to('cpu').numpy()   
-            log_var_batch_numpy[batch_num]=log_var.view(-1,128).to('cpu').numpy()   
-            
-            
-        
-   
+            log_var_batch_numpy[batch_num]=log_var.view(-1,128).to('cpu').numpy()                
     
-        # print(calc_accu(encoder,decoder,ono_train_dataloader,lang,EOS_token,device)) #3番目の引数のデータセットから音素to音素のaccuracyを測定
-        # print(calc_img2ono_accu(image_model,decoder,dataloader,lang,EOS_token,device)) #3番目の引数のデータセットから画像to音素のaccuracyを測定
+        ono2ono_accu, ono2ono_values = calc_accu(encoder,decoder,ono_train_dataloader,lang,SOS_token,EOS_token,device) #3番目の引数のデータセットから音素to音素のaccuracyを測定
+        img2ono_accu, img2ono_values = calc_img2ono_accu(image_model,decoder,dataloader,lang,SOS_token,EOS_token,device) #3番目の引数のデータセットから画像to音素のaccuracyを測定
+        print("ono2ono accu: ", ono2ono_accu)
+        print("img2ono accu: ", img2ono_accu)
+
+        # # ヒストグラム
+        plt.figure(figsize=(12, 10)) # グラフのサイズを設定 (幅, 高さ)
+        plt.hist([ono2ono_values, img2ono_values],  bins=range(18), ec='black', label=['ono2ono', 'img2ono'])
+
+        plt.legend(loc="upper right", fontsize=13) # (5)凡例表
+        # グラフのタイトルと軸ラベル
+        plt.title('Distribution of Levenshtein Distances (ld)')
+        plt.xlabel('Levenshtein Distance (ld) Value')
+        plt.ylabel('Frequency (Count)')
+
+        # x軸の目盛りを0から8の整数にする
+        plt.xticks(range(18)) # range(9) は 0, 1, ..., 8 を生成します
+
+        # グリッドの表示（任意、可視性を高めます）
+        plt.grid(axis='y', alpha=0.75) # y軸方向に薄いグリッドを表示
+        # bbox_inches='tight': 余白を自動的に調整して、グラフ全体が画像に収まるようにします。
+        if not os.path.exists(f"figure/{nums}/evaluate"):
+            os.makedirs(f"figure/{nums}/evaluate")
+        plt.savefig(f"figure/{nums}/evaluate/onohistogram.png")
+
+        # levemshtein distanceの距離と個数
+        target_numbers=range(18)
         
+        print("--- ld_values 内の要素数 ---")
+        print("ono2ono_ld_values: ", len(ono2ono_values))
+        print("img2ono_ld_values: ", len(img2ono_values))
+
+        # 0から18までの各数字についてループ
+        for number in target_numbers:
+            ono2ono_count = ono2ono_values.count(number)
+            img2ono_count = img2ono_values.count(number)
+            print(f"ld={number}  ono2ono: {ono2ono_count} 個, img2ono: {img2ono_count} 個")
+
+        print("--------------------------")
+
 
         myPCA(hidden_batch_numpy,phoneme_hidden_numpy,word_list,path_list,10,wordcount) #78000次元の特徴ベクトルをプロット
         generate_VAE_PCA(mu_batch_numpy,log_var_batch_numpy,word_list) #VAEから得られる潜在変数をプロット、3σ区間も楕円としてプロットする
@@ -351,6 +473,8 @@ def generate_VAE_PCA(mu,log_var,word_list): #μとσを埋め込み、どこを�
         os.makedirs(f"figure/{nums}")
     fig.savefig(f"figure/{nums}/VAEtrainimagehiddenPCA.png")
     plt.show()
+
+    
 def plot_ellipse(ax, center, cov2d, edge_color='black', face_color='none', alpha=1.0):# 2. 楕円を描画するための関数定義
     """
     center: [x, y] (楕円の中心)
@@ -379,6 +503,8 @@ def plot_ellipse(ax, center, cov2d, edge_color='black', face_color='none', alpha
         alpha=alpha
     )
     ax.add_patch(ellipse)
+
+
 def myPCA(img_batch_numpy,ono_batch_numpy,word_list,path_list,onelabelcount,numlabel):
     #主成分分析する
     import numpy as np
@@ -390,14 +516,19 @@ def myPCA(img_batch_numpy,ono_batch_numpy,word_list,path_list,onelabelcount,numl
     kakasi.setMode("H","a")
     converter=kakasi.getConverter()
     romaji_list = [converter.do(text) for text in word_list]
-    img_batch_numpy=img_batch_numpy.reshape(-1,78848) #変数2番目は次元数に合わせる
-    ono_batch_numpy=ono_batch_numpy.reshape(-1,78848) 
+
+    # print(len(img_batch_numpy)) = 1400
+    img_batch_numpy=img_batch_numpy.reshape(img_batch_numpy.shape[0], -1) #変数2番目は次元数に合わせる
+    # print("img_batch_numpy: ", len(img_batch_numpy)) = 1400
+    ono_batch_numpy=ono_batch_numpy.reshape(ono_batch_numpy.shape[0], -1) 
     # ono_batch_numpy=ono_batch_numpy.reshape(-1,100) #PCAで分析して、100次元で再構成を合わせようとしたとき
-    combined_numpy = np.concatenate((img_batch_numpy, ono_batch_numpy), axis=0)
+    combined_numpy = np.concatenate((img_batch_numpy, ono_batch_numpy), axis=0)    
     combined_numpy = select_subset_from_combined(combined_numpy, 
                                        n_labels=14, 
                                        n_samples_per_label=100, 
                                        n_subset=10)
+
+    
 
     pca=PCA(n_components=100)
     # 分析結果を元にデータセットを主成分に変換する
@@ -422,7 +553,9 @@ def myPCA(img_batch_numpy,ono_batch_numpy,word_list,path_list,onelabelcount,numl
     original_num=100 #削減する前の1ラベルのデータ数
     for i in range(numlabel):
         plt.scatter(transformed[imagecount:imagecount+onelabelcount, 0], transformed[imagecount:imagecount+onelabelcount, 1],c=color1[i],label=romaji_list[original_num*i])#画像        
+        #print("座標" , [i] , " : " , transformed[imagecount:imagecount+onelabelcount, 0] , " , " , transformed[imagecount:imagecount+onelabelcount, 1])
         imagecount+=onelabelcount
+
     # plt.scatter(transformed[onelabelcount*numlabel:num, 0], transformed[onelabelcount*numlabel:num, 1],c="teal",label=romaji_list[onelabelcount*numlabel])#データローダのdrop_lastによって削られた余り者たちをまとめてプロット
     
     # for i in range(int(len(transformed)/7)): #画像のパスをプロットする
@@ -503,15 +636,17 @@ if __name__ == '__main__':
     with torch.no_grad():
 
         device = "cuda:1" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        phoneme_num=40 #入出力として使える音素の数=データセット内の.n_wordsに等しい
+
+        lang=Lang('dataset/onomatope/dictionary.csv')
+
+        phoneme_num=lang.n_words #入出力として使える音素の数=データセット内の.n_wordsに等しい
         embedding_size = 128
         hidden_size   = 128
         
         size=64
-        nums=112
+        nums=20802
+        
 
-
-        lang=Lang('dataset/onomatope/dictionary.csv')
  
         #モデルの準備
         encoder           = Encoder( phoneme_num, embedding_size, hidden_size ).to(device)
@@ -526,15 +661,16 @@ if __name__ == '__main__':
         imgfile=f"model/{nums}/image_model_{nums}.pth"
         model_save_path=f"model/{nums}/prompt_converter_{nums}.pth"
         phonemevaefile=f"model/{nums}/phonemevae_{nums}.pth"
+
         
-        encoder.load_state_dict( torch.load( enfile ) ) #読み込み
-        decoder.load_state_dict( torch.load( defile ) )
+        encoder.load_state_dict( torch.load( enfile ) ,strict=True) #読み込み
+        decoder.load_state_dict( torch.load( defile ) ,strict=True)
         image_model.load_state_dict(torch.load(imgfile,map_location=device)) #map_locationをすることで読み込みデバイスの指定ができる（なぜだかわからんが、モデルを別のcudaに乗せようとして実行できない時があった）
         prompt_converter.load_state_dict(torch.load(model_save_path))    
         phonemevae.load_state_dict(torch.load(phonemevaefile))
         model_id = "dream-textures/texture-diffusion"
         pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16) #from_pretrainedは/pipelines/pipelines_utils.py内で定義されているクラス
-        pipe = pipe.to(device)        
+        pipe = pipe.to(device) 
         
         encoder.eval()
         decoder.eval()
@@ -552,5 +688,3 @@ if __name__ == '__main__':
     
 
        
-
-

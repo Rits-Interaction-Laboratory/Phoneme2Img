@@ -68,7 +68,7 @@ if __name__ == '__main__':
   with torch.no_grad():
     device = "cuda:0" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
     image_model=TextureNet().to(device)
-    prompt_converter=PromptEncoder2().to(device)
+    prompt_converter=PromptEncoder().to(device)
     model_id = "dream-textures/texture-diffusion"
     pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16) #from_pretrainedは/pipelines/pipelines_utils.py内で定義されているクラス
     pipe = pipe.to(device)

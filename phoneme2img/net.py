@@ -30,6 +30,7 @@ class Encoder( nn.Module ):
         new_hidden=F.normalize(new_hidden,p=2,dim=2)
         return out, new_hidden
     
+    
 class Decoder( nn.Module ):
     def __init__( self, hidden_size, embedding_size, output_size ):
         super().__init__()
@@ -58,12 +59,12 @@ class Decoder( nn.Module ):
         # softmax関数の適用。outputは３次元のテンソルなので２次元のテンソルを渡す
         result             = self.linear( gru_output[ 0 ] ) 
 
-
         return result, hidden
     
     def initHidden( self ):
         return torch.zeros( 1, 1, self.hidden_size )
     
+
 #image network--------------------------------------------------------------
 class Reshape(nn.Module):
     def __init__(self, *args):
@@ -153,7 +154,10 @@ class PromptEncoder(nn.Module): #PromptEncoderの構造を改良し、データ�
 
         # [-1, 1] に正規化(Tanh)
         x = self.final_activation(x)
-
+        #------
+        # x=F.normalize(x, p=2) # Tanh関数は-1~1の間にするやつ、F.normalizeやと、長さ(合計)が1になる
+        # x = torch.nn.functional.layer_norm(x, x.shape[-1:])
+        #------
         return x
 
 
@@ -184,8 +188,8 @@ class PhonemeEncoder(nn.Module):
         # 再パラメータ化トリック（複数サンプル）
         eps = torch.randn(num_samples, *ave.shape, device=ave.device)
         z = ave.unsqueeze(0) + torch.exp(log_dev.unsqueeze(0) / 2) * eps  # [num_samples, batch_size, z_dim]
-        
-        return z, ave, log_dev
+        return z, ave, log_dev # z:１つだけサンプリングしたもの,ave:平均,log_dev:標準偏差
+        # zはSDに通すやつ→正規化必要かも？、log_devが大きくないと数字が散らばらない
 
 
 class PhonemeDecoder(nn.Module):
@@ -212,7 +216,10 @@ class PhonemeDecoder(nn.Module):
         # 形状を戻す
         mu = mu.view(num_samples, batch_size, 77, 1024)
         log_var = log_var.view(num_samples, batch_size, 77, 1024)
-        
+
+        #------
+        # mu=F.normalize(mu, p=2)
+        #------
         return mu, log_var
 
 
@@ -226,6 +233,8 @@ class PhonemeVAE(nn.Module):
         self.encoder = PhonemeEncoder(input_dim, z_dim)
         self.decoder = PhonemeDecoder(z_dim, output_dim)
 
+        self.final_activation = nn.Tanh()
+
     def forward(self, x,):
         """
         x: [batch_size, input_dim]
@@ -233,6 +242,10 @@ class PhonemeVAE(nn.Module):
         """
         z, ave, log_dev = self.encoder(x, self.num_samples)  # [num_samples, batch_size, z_dim]
         mu, log_var = self.decoder(z)  # [num_samples, batch_size, 77, 1024]
-        
-        return mu, log_var, z, ave, log_dev
+        #------
+        # mu=F.normalize(mu, p=2)
+        mu = self.final_activation(mu)
+        #------
+        return mu, log_var, z, ave, log_dev # mu:楕円の中心,log_var:楕円の角度,z:１つだけサンプリングしたもの,ave:平均,log_dev:標準偏差
+        # zはSDに通すやつ→正規化必要かも？、log_devが大きくないと数字が散らばらない
     

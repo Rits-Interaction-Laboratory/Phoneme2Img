@@ -36,3 +36,17 @@ def select_top_k_outputs(target, mu_p,log_var_p,top_k=10):
     # target を top_k 個に複製（先頭に次元を追加して expand）
     expanded_target = target.unsqueeze(0).expand(top_k, -1, -1, -1)  # shape: (top_k, batch_size, 77, 1024)
     return best_outputs, expanded_target,best_log_var_p
+
+
+import torch
+import numpy as np
+import random
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
