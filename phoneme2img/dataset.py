@@ -195,23 +195,63 @@ class ImageLang:   #画像とオノマトペの単語を返すデータセット
 
         #----------------------------------------------------------------
         #フォルダにラベル名を振る場合のコード----------------------------------------------------------------
-        for path in glob.glob(target_dir): #pathの中にラベルフォルダまでが指定される
+        # for path in glob.glob(target_dir): #pathの中にラベルフォルダまでが指定される
 
-            name = os.path.splitext(os.path.basename(path))[0] #nameで音素とマッチングさせるためのラベル名が取得される
-            name=unicodedata.normalize("NFKC",name) #文字化け対策でノーマライズ
-            label = name_to_label[name] #ラベルリストからnameのラベル番号を取得
+        #     name = os.path.splitext(os.path.basename(path))[0] #nameで音素とマッチングさせるためのラベル名が取得される
+        #     name=unicodedata.normalize("NFKC",name) #文字化け対策でノーマライズ
+        #     label = name_to_label[name] #ラベルリストからnameのラベル番号を取得
             
             
-            for data in glob.glob(os.path.join(path,"*")): #os.path.join~~することであみあみの下を総なめするようにディレクトリを修正、それをglobによって全部取り出す
+        #     for data in glob.glob(os.path.join(path,"*")): #os.path.join~~することであみあみの下を総なめするようにディレクトリを修正、それをglobによって全部取り出す
+        #         self.labels.append(label) 
+        #         self.data.append(data)
+        #         img = Image.open(data).convert("RGB") #img_pathの画像を開く
+        #         img = self.transform(img) #transformする
+        #         self.img.append(img)
+        # for path in glob.glob(f"{image_hiddendir}/*"):
+        #     for data in glob.glob(f"{path}/*"):
+        #         self.img_hidden.append(data)
+        #----------------------------------------------------------------
+        
+        # === 修正箇所ここから ===
+        # 画像ディレクトリのループだけで完結させる
+        for path in glob.glob(target_dir): 
+            
+            # フォルダ名を取得 (例: "あみあみ")
+            folder_name = os.path.basename(path)
+
+            name = os.path.splitext(folder_name)[0] 
+            name = unicodedata.normalize("NFKC",name) 
+            
+            # 辞書にないフォルダがあった場合のエラー回避（念のため）
+            if name not in name_to_label:
+                continue
+
+            label = name_to_label[name] 
+            
+            # 画像ファイルを一つずつ取得
+            for data in glob.glob(os.path.join(path,"*")): 
                 self.labels.append(label) 
                 self.data.append(data)
-                img = Image.open(data).convert("RGB") #img_pathの画像を開く
-                img = self.transform(img) #transformする
+                
+                # 画像の読み込み
+                img = Image.open(data).convert("RGB") 
+                img = self.transform(img) 
                 self.img.append(img)
-        for path in glob.glob(f"{image_hiddendir}/*"):
-            for data in glob.glob(f"{path}/*"):
-                self.img_hidden.append(data)
-        #----------------------------------------------------------------
+
+                # --- hiddenパスの作成 ---
+                # 1. 画像ファイル名を取得 (例: "sample_001.jpg")
+                img_filename = os.path.basename(data)
+                # 2. 拡張子を除く (例: "sample_001")
+                file_base = os.path.splitext(img_filename)[0]
+                # 3. hidden用のパスを組み立てる (例: "image_hidden/あみあみ/sample_001.pt")
+                # 前提: 画像とptファイルは拡張子以外同じ名前であり、フォルダ名も同じであること
+                hidden_path = os.path.join(image_hiddendir, folder_name, file_base + ".pt")
+                
+                # リストに追加
+                self.img_hidden.append(hidden_path)
+        # === 修正箇所ここまで ===
+
         allow_list  = self.get_allow_list( max_length )#maxlength以下の長さの音素数をallowlistに入れる（長すぎる音素は省かれる)
         self.load_file(allow_list)#max以下の長さである単語を引数に渡す（今回の場合は264こ）
         
@@ -274,11 +314,13 @@ class ImageLang:   #画像とオノマトペの単語を返すデータセット
 
         img_path = self.data[index] #適当な画像を取ってくる
         img_label = self.labels[index] #その画像のラベル番号は何番か取ってくる
-        ono=self.ono[img_label] #取ってきたラベル番号のオノマトペを取ってくる（オノマトペのラベル番号とリストの番号は一致している）
+        ono=self.ono[img_label] 
+        #取ってきたラベル番号のオノマトペを取ってくる（オノマトペのラベル番号とリストの番号は一致している）
         
         phoneme = self.sentences[img_label] #同上
 
         img=self.img[index]
         img_hidden=torch.load(self.img_hidden[index]) #こいつはtensor配列なのでrequires_grad=Trueとなる
         img_hidden.requires_grad=False
-        return img, img_path, ono, phoneme,img_hidden    
+        hidden_path=self.img_hidden[index]
+        return img, img_path, ono, phoneme,img_hidden, hidden_path

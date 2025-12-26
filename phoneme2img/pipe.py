@@ -927,6 +927,7 @@ class StableDiffusionPipeline(
 
         # concatenate for backwards comp
         prompt_embeds = torch.cat([prompt_embeds_tuple[1], prompt_embeds_tuple[0]])
+        'catでテンソルを結合'
 
         return prompt_embeds
 
@@ -1037,7 +1038,9 @@ class StableDiffusionPipeline(
                 # obtaining the final prompt representations passes through the LayerNorm
                 # layer.
                 prompt_embeds = self.text_encoder.text_model.final_layer_norm(prompt_embeds)
+                'final_layer_normとはlayer_norm(辿れば定義してるとこ出てくる)。SDの入力にlayer_normは求められているのが分かったがほかの正規化はまだ分からない'
 
+        'dtypeの統一'
         if self.text_encoder is not None:
             prompt_embeds_dtype = self.text_encoder.dtype
         elif self.unet is not None:
@@ -1047,12 +1050,17 @@ class StableDiffusionPipeline(
 
         prompt_embeds = prompt_embeds.to(dtype=prompt_embeds_dtype, device=device)
 
+        '[1,      77,      1024]みたいな感じで要素の取り出し'
         bs_embed, seq_len, _ = prompt_embeds.shape
+
         # duplicate text embeddings for each generation per prompt, using mps friendly method
+        'repeat:テンソル繰り返し。num_images_per_promptの数だけプロンプト埋め込みを繰り返す。'
         prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
+        '引数で指定した形(ここではbs_embed*num_images_per_prompt * seq_len * -1の形)のテンソルに変形する'
         prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
 
         # get unconditional embeddings for classifier free guidance
+        'ネガティブプロンプト(入れたくない要素)の指定'
         if do_classifier_free_guidance and negative_prompt_embeds is None:
             uncond_tokens: List[str]
             if negative_prompt is None:

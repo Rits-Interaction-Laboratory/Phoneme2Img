@@ -211,8 +211,10 @@ def generate_stable_images(encoder,pipe,prompt_converter,phonemevae,lang,sentenc
 
         my_hidden=my_hidden.to(dtype=torch.bfloat16).requires_grad_(False).squeeze(1)
         # print(my_hidden.shape)
-        my_hidden =F.normalize(my_hidden, p=2, dim=-1)
+        
+        my_hidden=my_hidden.squeeze(1)
         my_hidden = torch.nn.functional.layer_norm(my_hidden, my_hidden.shape[-1:])
+        
         image,torchimage = pipe(prompt_embeds=my_hidden.detach())
 
         # print("my_hidden:",my_hidden)
@@ -312,7 +314,7 @@ def evaluate(encoder,decoder,image_model,pipe,prompt_converter,phonemevae,nums,d
 
             # 画像生成関数を実行
             _ = generate_stable_images(encoder, pipe, prompt_converter, phonemevae, lang, 
-                                    sentence=sentence, step=5, model_num=nums, EOS_token=EOS_token)
+                                    sentence=sentence, step=100, model_num=nums, EOS_token=EOS_token)
             
             decoded,encoder_hidden_2=ono_to_ono(sentence,encoder,decoder,lang,SOS_token,EOS_token,device)
             print("input  : ",sentence)
@@ -654,6 +656,7 @@ if __name__ == '__main__':
         image_model=TextureNet().to(device)
         prompt_converter=PromptEncoder().to(device)
         phonemevae=PhonemeVAE().to(device)
+
 
         
         enfile=f"model/{nums}/phonemeencoder_{nums}.pth"

@@ -27,7 +27,7 @@ class Encoder( nn.Module ):
         embedded        = self.embedding( _input ).view( 1, 1, -1 )
         out, new_hidden = self.gru( embedded, hidden )
         # new_hidden=new_hidden/(torch.norm(new_hidden)) #F.normalizeと同じ処理ではある
-        new_hidden=F.normalize(new_hidden,p=2,dim=2)
+        # new_hidden=F.normalize(new_hidden,p=2,dim=2)
         return out, new_hidden
     
     
@@ -42,7 +42,7 @@ class Decoder( nn.Module ):
         # 全結合して１層のネットワークにする
         self.linear         = nn.Linear( hidden_size, output_size )
         # softmaxのLogバージョン。dim=1で行方向を確率変換する(dim=0で列方向となる)
-        self.softmax     = nn.LogSoftmax( dim = 1 )
+        # self.softmax     = nn.LogSoftmax( dim = 1 )
         # self.layer_norm = nn.LayerNorm(normalized_shape=128)
         self.sigmoid = nn.Sigmoid()  # Sigmoid
         
@@ -118,8 +118,10 @@ class TextureNet(nn.Module):
         compressed = F.relu(self.ln2(self.fc2(compressed)))   # ReLU + Layer Normalization
         compressed = F.relu(self.ln3(self.fc3(compressed)))   # ReLU + Layer Normalization
         compressed = F.tanh(self.fc4(compressed))
-        compressed=F.normalize(compressed, p=2)
-        return compressed 
+        # compressed=F.normalize(compressed, p=2)
+        'tanhしないと、prompt_converterに入れれないっぽい。F.normalizeは多分意味ない'
+        # compressed = torch.nn.functional.layer_norm(compressed, compressed.shape[-1:])
+        return compressed
     
 
 #prompt converter-----------------------------------------------------------
@@ -133,7 +135,7 @@ class PromptEncoder(nn.Module): #PromptEncoderの構造を改良し、データ�
         self.ln2 = nn.LayerNorm(77*1024)# 埋め込み次元(77*1024)に対する LayerNorm
 
         # 出力範囲を [-1, 1] に
-        self.final_activation = nn.Tanh()
+        # self.final_activation = nn.Tanh()
 
     def forward(self, x):
         """
@@ -153,7 +155,7 @@ class PromptEncoder(nn.Module): #PromptEncoderの構造を改良し、データ�
 
 
         # [-1, 1] に正規化(Tanh)
-        x = self.final_activation(x)
+        # x = self.final_activation(x)
         #------
         # x=F.normalize(x, p=2) # Tanh関数は-1~1の間にするやつ、F.normalizeやと、長さ(合計)が1になる
         # x = torch.nn.functional.layer_norm(x, x.shape[-1:])
@@ -172,7 +174,7 @@ class PhonemeEncoder(nn.Module):
         self.fc_dev = nn.Linear(128, z_dim)   # log(σ^2) を出力
         self.relu = nn.ReLU()
 
-    def forward(self, x, num_samples=1): #num_samplesで出力するアウトプットの数を調整、何も指定しなかったら普通のVAE
+    def forward(self, x, num_samples=100): #num_samplesで出力するアウトプットの数を調整、何も指定しなかったら普通のVAE
         """
         x: [batch_size, input_dim]
         num_samples: 生成する潜在変数の数
@@ -244,8 +246,12 @@ class PhonemeVAE(nn.Module):
         mu, log_var = self.decoder(z)  # [num_samples, batch_size, 77, 1024]
         #------
         # mu=F.normalize(mu, p=2)
-        mu = self.final_activation(mu)
+        # mu = self.final_activation(mu)
         #------
         return mu, log_var, z, ave, log_dev # mu:楕円の中心,log_var:楕円の角度,z:１つだけサンプリングしたもの,ave:平均,log_dev:標準偏差
         # zはSDに通すやつ→正規化必要かも？、log_devが大きくないと数字が散らばらない
-    
+        'mu→VAEによって再構成された埋め込みベクトル 77*1024'
+        'log_var→再構成分布の分散 77*1024'
+        'z→100個サンプリングしたときの潜在変数 128'
+        'ave→潜在空間上の平均 z_dim=128'
+        'log_dev→潜在空間上の分散。潜在変数の分散の対数。KLダイバージェンスの計算に使う 128'
