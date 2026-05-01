@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models, transforms
 from torchvision.models import VGG19_Weights
-from utils import gram_matrix
+from utils import gram_matrix,draw_pca_plot_vae_samples
 #phoneme network--------------------------------------------------------------
 # Start core part
 class Encoder( nn.Module ):
@@ -228,6 +228,70 @@ class PhonemeDecoder(nn.Module):
 class PhonemeVAE(nn.Module):
     """
     Encoder + Decoder (複数サンプル対応)
+    log_devを1（対数分散0）に固定してサンプリングする
+    """
+    def __init__(self, input_dim=128, z_dim=128, output_dim=77 * 1024, num_samples=1):
+        super().__init__()
+        self.num_samples = num_samples
+        self.encoder = PhonemeEncoder(input_dim, z_dim)
+        self.decoder = PhonemeDecoder(z_dim, output_dim)
+        self.final_activation = nn.Tanh()
+
+    def reparameterize_fixed(self, ave, num_samples):
+        """
+        平均 ave [batch_size, z_dim] を受け取り、
+        分散を 1 固定で [num_samples, batch_size, z_dim] を生成する
+        """
+        # ave を [1, batch_size, z_dim] に拡張
+        ave_expanded = ave.unsqueeze(0)
+        
+        # 期待する出力形状 [num_samples, batch_size, z_dim] と同じ形の標準正規分布ノイズを作成
+        # これにより分散が1(標準偏差1)に固定される
+        eps = torch.randn(num_samples, *ave.shape, device=ave.device)
+        # randnにより、分散が1の正規分布が計算される。
+        # ここはlog_devの数字は関係ない、zを正規分布からサンプリングしなおしているだけ。
+        eps2 = torch.randn(500, *ave.shape, device=ave.device)
+        # z = μ + ε * 1.0 (std=1.0)
+        return ave_expanded + eps * 0.2 ,ave_expanded + eps2 * 0.2  #←最終サンプリングされる100個のベクトル
+
+    def forward(self, x, epoch, nums, idx, ONO):
+        """
+        x: [batch_size, input_dim]
+        """
+        # 1. エンコーダから平均(ave)と予測された対数分散(log_dev)を取得
+        # ※内部でサンプリングされている場合は、aveのみを利用する形に上書きします
+        z_original, ave, log_dev = self.encoder(x, self.num_samples)
+
+        # 2. 分散を1に固定してサンプリングし直す (zを上書き)
+        # z: [num_samples, batch_size, z_dim]
+        z,z2 = self.reparameterize_fixed(ave, self.num_samples)
+
+        if idx % 10 == 0:
+            with torch.no_grad():
+                amiami_features = []
+                amiami_img_features = []
+                ave_expanded = ave.unsqueeze(0)
+                amiami_img_features.append(ave_expanded.to(torch.float32).reshape(-1).detach().cpu().numpy())
+
+            #     # print(epoch+1, "エポック目の", idx,"バッチ目")
+            #zは100個、z2は上の関数内で指定した個数
+                for i in range(z.size(0)):
+                    single_sample = z[i:i+1]
+                    amiami_features.append(single_sample.to(torch.float32).reshape(-1).detach().cpu().numpy())
+                common_limits = ([-1.0, 1.0], [-1.0, 1.0])
+                draw_pca_plot_vae_samples(epoch,nums,idx,amiami_features,amiami_img_features,pca_model=None, limits=common_limits, dir="VAEsampling_KL",mode="KL1e2_std0.2_z",ono=f"{ONO}")
+
+
+        # 3. デコーダに渡す
+        mu, log_var = self.decoder(z)
+
+        # 元の入出力形式を維持
+        return mu, log_var, z, ave, log_dev
+
+
+class PhonemeVAE1(nn.Module):
+    """
+    Encoder + Decoder (複数サンプル対応)
     """
     def __init__(self, input_dim=128, z_dim=128, output_dim=77 * 1024,num_samples=1):
         super().__init__()
@@ -255,3 +319,68 @@ class PhonemeVAE(nn.Module):
         'z→100個サンプリングしたときの潜在変数 128'
         'ave→潜在空間上の平均 z_dim=128'
         'log_dev→潜在空間上の分散。潜在変数の分散の対数。KLダイバージェンスの計算に使う 128'
+
+
+class ImageEncoder(nn.Module):
+    def __init__(self, input_dim=77 * 1024, z_dim=128):
+        super().__init__()
+        # 入力が巨大なため、段階的に次元を落とす
+        self.fc1 = nn.Linear(input_dim, 1024)
+        self.fc2 = nn.Linear(1024, 256)
+        self.fc_ave = nn.Linear(256, z_dim)  # 平均 μ
+        self.fc_dev = nn.Linear(256, z_dim)  # 分散 log(σ^2)
+        self.relu = nn.ReLU()
+
+    def forward(self, x, num_samples=100):
+        # x: [batch_size, 77, 1024] -> [batch_size, 78848] へ平坦化
+        batch_size = x.size(0)
+        x = x.view(batch_size, -1) 
+
+        x = self.relu(self.fc1(x))
+        x = self.relu(self.fc2(x))
+
+        ave = self.fc_ave(x)
+        log_dev = self.fc_dev(x)
+
+        # 再パラメータ化
+        eps = torch.randn(num_samples, batch_size, ave.size(-1), device=ave.device)
+        z = ave.unsqueeze(0) + torch.exp(log_dev.unsqueeze(0) / 2) * eps
+        return z, ave, log_dev
+
+class ImageDecoder(nn.Module):
+    def __init__(self, z_dim=128, output_dim=77 * 1024):
+        super().__init__()
+        self.fc1 = nn.Linear(z_dim, 256)
+        self.fc2 = nn.Linear(256, 1024)
+        self.mu = nn.Linear(1024, output_dim)
+        self.log_var = nn.Linear(1024, output_dim)
+        self.relu = nn.ReLU()
+
+    def forward(self, z):
+        # z: [num_samples, batch_size, z_dim]
+        num_samples, batch_size, z_dim = z.shape
+        z = z.view(-1, z_dim) # 全サンプルをバッチとして処理
+
+        x = self.relu(self.fc1(z))
+        x = self.relu(self.fc2(x))
+        mu = self.mu(x) # [num_samples * batch_size, 78848]
+        log_var = self.log_var(x)
+
+        # 形を [num_samples, batch_size, 77, 1024] に戻す
+        mu = mu.view(num_samples, batch_size, 77, 1024)
+        log_var = log_var.view(num_samples, batch_size, 77, 1024)
+        return mu,log_var
+
+class ImageVAE(nn.Module):
+    def __init__(self, z_dim=128, num_samples=100):
+        super().__init__()
+        self.num_samples = num_samples
+        self.encoder = ImageEncoder(input_dim=77 * 1024, z_dim=z_dim)
+        self.decoder = ImageDecoder(z_dim=z_dim, output_dim=77 * 1024)
+
+    def forward(self, x):
+        # x: [batch_size, 77, 1024]
+        z, ave, log_dev = self.encoder(x, self.num_samples)
+        mu, log_var = self.decoder(z) # [num_samples, batch_size, 77, 1024]
+        
+        return mu, log_var, z, ave, log_dev

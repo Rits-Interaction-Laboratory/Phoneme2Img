@@ -43,19 +43,20 @@ def criterion_VAE(target, ave, log_dev, ave_p, log_dev_p): #VAEの再構成とKL
     var=var.sum()/(num_batch*num_sample)
     log_var=log_dev_p.sum()/(num_batch*num_sample)
     sq_error=sq_error.sum()/(num_batch*num_sample)
-    
-    # mse_loss=F.mse_loss(target,ave_p,reduction="sum")
-    # 'my_hiddenとbest_outputs2の損失'
-    # mse_loss=mse_loss/(num_batch*num_sample)
-    # loss = mse_loss+kl_loss  
+
+    mse_loss=F.mse_loss(target,ave_p,reduction="sum")
+    'my_hiddenとbest_outputs2の損失'
+    mse_loss=mse_loss/(num_batch*num_sample)
+    loss = mse_loss+kl_loss * 1e2
     # lossは1サンプルの再構成誤差とKLDの値を足したものになり、それぞれのLossの値も1サンプルの誤差を表した値となる
                 
-    cos = F.cosine_similarity(target, ave_p, dim=-1)
-    '長さ1なのでmseじゃなくてcosで計算。'
-    cos_loss = (1 - cos).mean()
-    loss = cos_loss + kl_loss * 1e+6
+    # cos = F.cosine_similarity(target, ave_p, dim=-1)
+    # '長さ1なのでmseじゃなくてcosで計算。'
+    # cos_loss = (1 - cos).mean()
+    # loss = cos_loss + kl_loss * 1e-3
 
-    return loss,recon_loss,kl_loss,sq_error,log_var,var,nll_per,cos_loss
+    return loss,recon_loss,kl_loss,sq_error,log_var,var,nll_per,mse_loss
+
 
 def criterion_PCAVAE(x, mean, logvar,z_mean,z_logvar):
     """

@@ -149,6 +149,7 @@ class ImageDataset: #画像単体のデータセット
         img = Image.open(img_path).convert("RGB") #img_pathの画像を開く
         img = self.transform(img) #transformする
         return img, img_path
+ 
 
 class ImageLang:   #画像とオノマトペの単語を返すデータセット
     def __init__( self, filename,dir,image_hiddendir,transform ): #呼び出されたとき、最初に行うこと
@@ -235,9 +236,9 @@ class ImageLang:   #画像とオノマトペの単語を返すデータセット
                 self.data.append(data)
                 
                 # 画像の読み込み
-                img = Image.open(data).convert("RGB") 
-                img = self.transform(img) 
-                self.img.append(img)
+                # img = Image.open(data).convert("RGB") 
+                # img = self.transform(img) 
+                # self.img.append(img)
 
                 # --- hiddenパスの作成 ---
                 # 1. 画像ファイル名を取得 (例: "sample_001.jpg")
@@ -319,8 +320,70 @@ class ImageLang:   #画像とオノマトペの単語を返すデータセット
         
         phoneme = self.sentences[img_label] #同上
 
-        img=self.img[index]
+        # img=self.img[index]
+        
+        # --- ここで読み込む ---
+        img = Image.open(img_path).convert("RGB")
+        img = self.transform(img) # transform（Tensor化など）を適用
+
         img_hidden=torch.load(self.img_hidden[index]) #こいつはtensor配列なのでrequires_grad=Trueとなる
         img_hidden.requires_grad=False
         hidden_path=self.img_hidden[index]
+        
         return img, img_path, ono, phoneme,img_hidden, hidden_path
+    
+class ImageLang2:
+    def __init__(self, filename, dir, image_hiddendir, transform):
+        self.transform = transform
+        self.data = []        # 画像のパスだけを保持
+        self.img_hidden = []  # hiddenのパスだけを保持
+        self.labels = []      # ラベル番号を保持
+        self.ono = []         # 単語リスト
+        self.sentences = []   # 音素リスト
+        
+        # --- CSVの読み込み（最小限に） ---
+        df = pd.read_csv(filename)
+        name_to_label = {}
+        for i, row in df.iterrows():
+            word = row[2]
+            phoneme = row[1]
+            self.ono.append(word)
+            self.sentences.append(phoneme)
+            name_to_label[unicodedata.normalize("NFKC", word)] = i
+
+        # --- パスの収集（画像は読み込まない！） ---
+        target_dir = os.path.join(dir, "*")
+        for path in glob.glob(target_dir): 
+            folder_name = os.path.basename(path)
+            name = unicodedata.normalize("NFKC", os.path.splitext(folder_name)[0])
+            
+            if name not in name_to_label:
+                continue
+            
+            label = name_to_label[name]
+            
+            for img_path in glob.glob(os.path.join(path, "*")): 
+                self.data.append(img_path)
+                self.labels.append(label)
+                
+                # hiddenパスの生成
+                file_base = os.path.splitext(os.path.basename(img_path))[0]
+                hidden_path = os.path.join(image_hiddendir, folder_name, file_base + ".pt")
+                self.img_hidden.append(hidden_path)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        # 使う瞬間にだけロードする (Lazy Loading)
+        img_path = self.data[index]
+        label_idx = self.labels[index]
+        
+        # 画像のロード
+        img = Image.open(img_path).convert("RGB")
+        img = self.transform(img)
+        
+        # 教師データのロード
+        img_hidden = torch.load(self.img_hidden[index], map_location="cpu")
+        
+        return img, img_path, self.ono[label_idx], self.sentences[label_idx], img_hidden, self.img_hidden[index]

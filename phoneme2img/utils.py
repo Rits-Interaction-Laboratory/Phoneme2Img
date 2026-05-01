@@ -1,13 +1,12 @@
 #カテゴライズが難しい関数はここに
-import torch
-import torch.nn as nn
-import random
-import torch
-import torch.nn as nn
 import os
+import cv2
+import torch
+import random
 import numpy as np
+import torch.nn as nn
+import japanize_matplotlib
 import matplotlib.pyplot as plt
-
 from sklearn.decomposition import PCA
 from matplotlib.patches import Ellipse
 from collections import defaultdict # データをグループ化するために使用
@@ -47,12 +46,34 @@ def select_top_k_outputs(target, mu_p,log_var_p,top_k=10):
     best_log_var_p = log_var_p[best_indices, batch_indices].to(dtype=torch.bfloat16).requires_grad_(True)     # shape: (top_k, batch_size, 77, 1024)
     # target を top_k 個に複製（先頭に次元を追加して expand）
     expanded_target = target.unsqueeze(0).expand(top_k, -1, -1, -1)  # shape: (top_k, batch_size, 77, 1024)
+    
     return best_outputs, expanded_target,best_log_var_p
 
+# def select_top_k_outputs(target, mu_p, log_var_p, top_k=10):
+#     # 1. 各サンプルとtarget間のMSEを計算 (shape: num_samples, batch_size)
+#     losses = torch.stack([
+#         nn.MSELoss(reduction='none')(out, target).mean(dim=(1, 2))
+#         for out in mu_p
+#     ], dim=0)
 
-import torch
-import numpy as np
-import random
+#     # 2. 誤差が小さい順にインデックスを取得 (shape: top_k, batch_size)
+#     best_indices = torch.argsort(losses, dim=0)[:top_k]
+
+#     # 3. 上位 top_k の出力を抽出
+#     batch_indices = torch.arange(mu_p.shape[1]).unsqueeze(0).expand(top_k, -1)
+    
+#     # 抽出時点の shape: (top_k, batch_size, 77, 1024)
+#     top_k_mu = mu_p[best_indices, batch_indices]
+#     top_k_log_var = log_var_p[best_indices, batch_indices]
+
+#     # --- ここで平均化処理を行う ---
+#     # dim=0（top_kの次元）方向に平均を取る
+#     # 結果の shape: (batch_size, 77, 1024)
+#     best_output_mean = top_k_mu.mean(dim=0).to(dtype=torch.bfloat16).requires_grad_(True)
+#     best_log_var_mean = top_k_log_var.mean(dim=0).to(dtype=torch.bfloat16).requires_grad_(True)
+
+#     return best_output_mean, target, best_log_var_mean
+
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -104,34 +125,48 @@ def select_random_output(mu_p, log_var_p, target):
 # best_outputs, my_hidden2, log_var_p2 = select_random_output(mu_p, log_var_p, my_hidden)
 
 
-def draw_pca_plot(epoch, nums, all_labels, all_img_features, all_ono_features):
-    """
-    all_labels: リスト [1400個のラベル文字列]
-    all_img_features: リスト [1400個のnumpy配列(128次元)]
-    all_ono_features: リスト [1400個のnumpy配列(128次元)]
-    """
 
-    # データをNumpy配列に変換
-    X_img = np.array(all_img_features) # (1400, 128)
-    X_ono = np.array(all_ono_features) # (1400, 128)
+def draw_pca_plot3(epoch, nums, all_labels,
+                  all_img_features, target=None, pca_model=None, limits=None, dir="ono_img_ver11", mode="train"):
+    """
+    all_labels           : [1400] ラベル文字列
+    all_img_features     : [1400, 128] my_hidden（予測）
+    target  : [1400, 128] IMG_HIDDEN（教師）
+    all_ono_features     : [1400, 128] phoneme_hidden
+    """
     
-    # 画像とオノマトペを結合してPCAを学習させる（同じ空間に射影するため）
-    X_concat = np.concatenate([X_img, X_ono], axis=0)
-    
-    # PCAで2次元に圧縮
-    pca = PCA(n_components=2)
-    pca.fit(X_concat)
-    
-    # それぞれ変換
-    X_img_pca = pca.transform(X_img)
-    X_ono_pca = pca.transform(X_ono)
-    
-    # プロットの準備
+# --- PCAの計算は全データで行う（これでサンプルの0件エラーを回避） ---
+    X_img = np.array(all_img_features)
+    X_img = X_img / (np.linalg.norm(X_img, axis=1, keepdims=True) + 1e-8)
+
+    if pca_model is None:
+        pca_model = PCA(n_components=2)
+        X_img_pca = pca_model.fit_transform(X_img)
+    else:
+        X_img_pca = pca_model.transform(X_img)
+
+    # --- ここから追加：表示範囲の限定 ---
+    # ラベルでソートした時の700〜799番目のインデックスを集合(set)として保持
+    if mode == "amiami":
+        target_indices = set(np.argsort(all_labels)[0:100])
+    elif mode == "shimashima":
+        target_indices = set(np.argsort(all_labels)[700:800])
+    else:
+        # "trainimage" やそれ以外のモードの時は、全インデックス（1400個）を対象にする
+        target_indices = set(range(len(all_labels)))
+
+    # 凡例に余計なラベルが出ないよう、対象範囲に存在するラベル名だけを抽出
+    unique_labels = sorted(set([all_labels[idx] for idx in target_indices]))
+    # ----------------------------------
+
     plt.figure(figsize=(12, 10))
-    
-    # ユニークなラベルを取得 (14種類)
-    unique_labels = sorted(list(set(all_labels)))
-    
+
+    if limits:
+        plt.xlim(limits[0])
+        plt.ylim(limits[1])
+        plt.gca().set_aspect('equal', adjustable='box') # 1:1の比率にする
+
+    unique_labels = sorted(set(all_labels))
     # 色の準備 (タブローカラー20色などを使う)
     colors = ["red","yellow", "gray","silver","rosybrown","firebrick",
             "darksalmon","sienna","sandybrown","tan",
@@ -140,37 +175,47 @@ def draw_pca_plot(epoch, nums, all_labels, all_img_features, all_ono_features):
                 "deepskyblue","blue","pink","orange","crimson",
                 "mediumvioletred","plum","darkorchid","mediumpurple",
                 "chocolate","peru","yellow","y","aqua","lightsteelblue","linen","teal"]
-
+    
     for i, label in enumerate(unique_labels):
-        # 現在のラベルに対応するインデックスを取得
-        indices = [idx for idx, x in enumerate(all_labels) if x == label]
+        # ★ここを修正：現在のラベル名と一致し、かつ target_indices に含まれるものだけ抽出
+        indices = [j for j, l in enumerate(all_labels) if (l == label and j in target_indices)]
         
-        # 1. 画像のプロット (丸印 'o')
-        # そのラベルに対応する画像群を取り出す
+        if not indices: continue # 万が一空の場合はスキップ
+        
         img_points = X_img_pca[indices]
-        plt.scatter(img_points[:, 0], img_points[:, 1], 
-                    color=colors[i], marker='o', alpha=0.6, s=30, 
-                    label=label if epoch == 0 else "") # 凡例が多すぎないように調整
 
-        # 2. オノマトペのプロット (バツ印 'x')
-        # そのラベルに対応するオノマトペ群を取り出す
-        ono_points = X_ono_pca[indices]
-        
-        # 学習中はオノマトペベクトルも微妙に動くが、代表点(平均)を一つ描画する形が見やすい
-        # 全部の点を描画したい場合は下のmeanをとらずにscatterしてください
-        ono_center = np.mean(ono_points, axis=0)
-        
-        plt.scatter(ono_center[0], ono_center[1], 
-                    color=colors[i], marker='x', s=200, linewidths=3, edgecolors='black')
+        # --- 教師データ (all_IMG_HIDDEN) がある場合のみ描画 ---
+        if target is not None:
+            X_gt = np.array(target)
+            X_gt = X_gt / (np.linalg.norm(X_gt, axis=1, keepdims=True) + 1e-8)
+            X_gt_pca = pca_model.transform(X_gt)
+            gt_points = X_gt_pca[indices] # indicesが絞り込まれているので、ここも自動で絞られます
 
-        # テキストラベルをオノマトペの位置に表示
-        plt.text(ono_center[0], ono_center[1], label, 
-                 fontsize=9, fontweight='bold', color='black', alpha=0.8)
+            # 教師データの散布図 (△)
+            plt.scatter(gt_points[:, 0], gt_points[:, 1], marker='^', s=50,
+                        color=colors[i], alpha=0.9)
+
+            # 対応線
+            for j in range(len(indices)):
+                plt.plot([gt_points[j, 0], img_points[j, 0]],
+                         [gt_points[j, 1], img_points[j, 1]],
+                         color=colors[i], linewidth=0.4, alpha=0.8)
+
+        plt.title(f"Latent space Mapping\n△:my_hidden | 〇:best_outputs(VAE)\n(Epoch{epoch+1}train)")
+
+        # my_hidden（予測）〇
+        plt.scatter(
+            img_points[:, 0], img_points[:, 1],
+            marker='o', s=20,
+            color=colors[i], alpha=0.9
+        )
+
+    
+
 
     # グラフの装飾
-    plt.title(f"ENCODER_hidden and hidden\nJoint Latent Space (Epoch {epoch+1})", fontsize=16)
-    plt.xlabel(f"PC1 (Contribution: {pca.explained_variance_ratio_[0]:.2f})")
-    plt.ylabel(f"PC2 (Contribution: {pca.explained_variance_ratio_[1]:.2f})")
+    plt.xlabel(f"PC1 (Contribution: {pca_model.explained_variance_ratio_[0]:.2f})")
+    plt.ylabel(f"PC2 (Contribution: {pca_model.explained_variance_ratio_[1]:.2f})")
     plt.grid(True)
     
     # 凡例 (画像のみ表示)
@@ -183,325 +228,110 @@ def draw_pca_plot(epoch, nums, all_labels, all_img_features, all_ono_features):
     plt.tight_layout()
     
     # 保存
-    save_path = os.path.join(f"figure/{nums}/train/ono_img_ver4", f"epoch{epoch+1}_a_trainimagehiddenPCA.png")
+    # save_path = os.path.join(f"figure/{nums}/train/ono_img_ver10", f"epoch{epoch+1}_trainimagehiddenPCA.png")
+    save_path = os.path.join(f"figure/{nums}/train/{dir}", f"epoch{epoch+1}_{mode}hiddenPCA.png")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True) # フォルダがない場合のエラー防止
     plt.savefig(save_path)
     plt.close()
     print(f"PCA plot saved: {save_path}")
 
 
-def l2_normalize(x, eps=1e-8):
-    return x / (np.linalg.norm(x, axis=1, keepdims=True) + eps)
-
-
-def draw_pca_plot2(epoch, nums, all_labels,
-                  all_img_features, all_IMG_HIDDEN, all_ono_features):
+def draw_pca_plot_vae_samples(epoch, nums, idx, amiami_features, target_feature, 
+                             pca_model=None, limits=None, dir="ono_img_ver11", mode="amiami",ono="あみあみ"):
     """
-    all_labels           : [1400] ラベル文字列
-    all_img_features     : [1400, 128] my_hidden（予測）
-    all_IMG_HIDDEN  : [1400, 128] IMG_HIDDEN（教師）
-    all_ono_features     : [1400, 128] phoneme_hidden
+    amiami_features : [100, 128] VAEからサンプリングされた100個の特徴量
+    target_feature  : [1, 128]  元となった画像'woven_001.png'の教師特徴量
     """
+    
+    # --- 1. VAEサンプリング100個のPCA変換 ---
+    X_vae = np.array(amiami_features)
+    # ノルム正規化（モデルの学習に合わせる）
+    X_vae = X_vae / (np.linalg.norm(X_vae, axis=1, keepdims=True) + 1e-8)
 
-    # ===============================
-    # numpy化
-    # ===============================
-    X_img = np.array(all_img_features)        # (1400, 128)
-    X_gt  = np.array(all_IMG_HIDDEN)     # (1400, 128)
-    X_ono = np.array(all_ono_features)        # (1400, 128)
+    # pca_model が None の場合、その場で新しく作成して fit する
+    if pca_model is None:
+        pca_model = PCA(n_components=2)
+        X_vae_pca = pca_model.fit_transform(X_vae)  # 学習と変換を同時に行う
+    else:
+        X_vae_pca = pca_model.transform(X_vae)
 
-    # ===============================
-    # PCAは必ず「全部まとめて1回」
-    # ===============================
-    X_concat = np.concatenate([X_img, X_gt, X_ono], axis=0)
+    # --- 2. 教師データ（1個）のPCA変換 ---
+    X_gt = np.array(target_feature)
+    if X_gt.ndim == 1: X_gt = X_gt.reshape(1, -1) # 1次元なら2次元にする
+    X_gt = X_gt / (np.linalg.norm(X_gt, axis=1, keepdims=True) + 1e-8)
+    X_gt_pca = pca_model.transform(X_gt)
 
-    X_img = l2_normalize(X_img)
-    X_gt  = l2_normalize(X_gt)
-    X_ono = l2_normalize(X_ono)
+    plt.figure(figsize=(10, 8))
 
+    if limits is not None:
+        plt.xlim(limits[0])
+        plt.ylim(limits[1])
+        plt.gca().set_aspect('equal', adjustable='box')
 
-    pca = PCA(n_components=2)
-    pca.fit(X_concat)
+    # --- 3. 描画 ---
 
-    X_img_pca = pca.transform(X_img)
-    X_gt_pca  = pca.transform(X_gt)
-    X_ono_pca = pca.transform(X_ono)
+    if mode == "KL1e2_std0.2_z":
 
-    # ===============================
-    # 描画準備
-    # ===============================
-    plt.figure(figsize=(12, 10))
-
-    unique_labels = sorted(list(set(all_labels)))
-
-    colors = [
-        "red","yellow","gray","silver","rosybrown","firebrick",
-        "darksalmon","sienna","sandybrown","tan",
-        "gold","olivedrab","chartreuse","palegreen"
-    ]
-
-    # ===============================
-    # ラベルごとに描画
-    # ===============================
-    for i, label in enumerate(unique_labels):
-        indices = [idx for idx, x in enumerate(all_labels) if x == label]
-
-        # -------- my_hidden（予測）
-        img_points = X_img_pca[indices]
+        # zサンプリング点 (〇) - 500個
         plt.scatter(
-            img_points[:, 0], img_points[:, 1],
-            color=colors[i], marker='o',
-            alpha=0.4, s=25,
-            label=label if epoch == 0 else ""
+            X_vae_pca[:, 0], X_vae_pca[:, 1],
+            marker='o', s=20, color='red', alpha=0.9, label='z Samples (n=500)'
         )
 
-        # -------- IMG_HIDDEN（教師）
-        gt_points = X_gt_pca[indices]
+        # 教師データ (△) - 1個
         plt.scatter(
-            gt_points[:, 0], gt_points[:, 1],
-            color=colors[i], marker='^',
-            alpha=0.4, s=25
+            X_gt_pca[:, 0], X_gt_pca[:, 1],
+            marker='^', s=50, color='blue',  
+            label='mu'
         )
 
-        # -------- 対応する点を線で結ぶ
-        for j in range(len(indices)):
-            plt.plot(
-                [img_points[j, 0], gt_points[j, 0]],
-                [img_points[j, 1], gt_points[j, 1]],
-                color=colors[i],
-                linewidth=0.3,
-                alpha=0.3
-            )
+        # # 対応線 (各サンプルから教師へ線を引く)
+        # for i in range(len(X_vae_pca)):
+        #     plt.plot(
+        #         [X_gt_pca[0, 0], X_vae_pca[i, 0]],
+        #         [X_gt_pca[0, 1], X_vae_pca[i, 1]],
+        #         color='gray', linewidth=0.2, alpha=0.4
+        #     )
 
-        # -------- phoneme（14点のみ：平均）
-        ono_points = X_ono_pca[indices]
-        ono_center = np.mean(ono_points, axis=0)
+        # --- 4. グラフ装飾 ---
+        plt.title(f"z Sampling Diversity\nMode: {mode} | Epoch: {epoch+1} | Batch: {idx}\nOnomatope: {ono}")
 
+    else:
+                # VAEサンプリング点 (〇) - 100個
         plt.scatter(
-            ono_center[0], ono_center[1],
-            color=colors[i], marker='x',
-            s=220, linewidths=3, edgecolors='black', zorder=10
+            X_vae_pca[:, 0], X_vae_pca[:, 1],
+            marker='o', s=20, color='red', alpha=0.9, label='VAE Samples (n=100)'
         )
 
-        plt.text(
-            ono_center[0], ono_center[1],
-            label,
-            fontsize=10, fontweight='bold',
-            color='black', alpha=0.9
+        # 教師データ (△) - 1個
+        plt.scatter(
+            X_gt_pca[:, 0], X_gt_pca[:, 1],
+            marker='^', s=50, color='blue',  
+            label='Target'
         )
 
-    # ===============================
-    # 装飾
-    # ===============================
-    plt.title(
-        f"Joint PCA Space (Epoch {epoch+1})\n"
-        "circle: my_hidden / triangle: IMG_HIDDEN / x: phoneme",
-        fontsize=15
-    )
+        # # 対応線 (各サンプルから教師へ線を引く)
+        # for i in range(len(X_vae_pca)):
+        #     plt.plot(
+        #         [X_gt_pca[0, 0], X_vae_pca[i, 0]],
+        #         [X_gt_pca[0, 1], X_vae_pca[i, 1]],
+        #         color='gray', linewidth=0.2, alpha=0.4
+        #     )
 
-    plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.2f})")
-    plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.2f})")
-    plt.grid(True)
+        # --- 4. グラフ装飾 ---
+        plt.title(f"Latent space: VAE Sampling Diversity\nMode: {mode} | Epoch: {epoch+1} | Batch: {idx}\nOnomatope: {ono}")
 
-    from matplotlib.lines import Line2D
-    legend_elements = [
-        Line2D([0],[0], marker='o', color='w', label='my_hidden',
-               markerfacecolor='gray', markersize=8),
-        Line2D([0],[0], marker='^', color='w', label='IMG_HIDDEN',
-               markerfacecolor='gray', markersize=8),
-        Line2D([0],[0], marker='x', color='black', label='phoneme',
-               markersize=10)
-    ]
-    plt.legend(handles=legend_elements, loc='upper right')
+    plt.xlabel(f"PC1 (Contribution: {pca_model.explained_variance_ratio_[0]:.2f})")
+    plt.ylabel(f"PC2 (Contribution: {pca_model.explained_variance_ratio_[1]:.2f})")
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.legend(loc='upper right')
 
-    plt.tight_layout()
 
-    save_path = os.path.join(
-        f"figure/{nums}/train/ono_img_ver4",
-        f"epoch{epoch+1}_a_trainimagehiddePCA.png"
-    )
+    save_path = os.path.join(f"figure/{nums}/train/{dir}", f"{mode}_VAEsamplingPCA.png")
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path)
     plt.close()
-
-    print(f"PCA plot saved: {save_path}")
-
-
-def draw_pca_plot3(epoch, nums, all_labels,
-                  all_img_features, all_IMG_HIDDEN, all_ono_features):
-    """
-    all_labels           : [1400] ラベル文字列
-    all_img_features     : [1400, 128] my_hidden（予測）
-    all_IMG_HIDDEN  : [1400, 128] IMG_HIDDEN（教師）
-    all_ono_features     : [1400, 128] phoneme_hidden
-    """
-    # IMG_HIDDENのみでPCA空間を定義
-    X_gt = np.array(all_IMG_HIDDEN)   # (1400, 128)
-
-    # 念のため正規化（重要）
-    X_gt = X_gt / (np.linalg.norm(X_gt, axis=1, keepdims=True) + 1e-8)
-
-    pca = PCA(n_components=2)
-    pca.fit(X_gt)
-
-    X_gt_pca = pca.transform(X_gt)
-
-    X_img = np.array(all_img_features)
-    X_img = X_img / (np.linalg.norm(X_img, axis=1, keepdims=True) + 1e-8)
-
-    X_img_pca = pca.transform(X_img)
-
-    plt.figure(figsize=(12, 10))
-
-
-    unique_labels = sorted(set(all_labels))
-    # 色の準備 (タブローカラー20色などを使う)
-    colors = ["red","yellow", "gray","silver","rosybrown","firebrick",
-            "darksalmon","sienna","sandybrown","tan",
-                "gold","olivedrab","chartreuse","palegreen",
-                "darkgreen","lightseagreen","paleturquoise",
-                "deepskyblue","blue","pink","orange","crimson",
-                "mediumvioletred","plum","darkorchid","mediumpurple",
-                "chocolate","peru","yellow","y","aqua","lightsteelblue","linen","teal"]
-    
-
-    for i, label in enumerate(unique_labels):
-        indices = [j for j, l in enumerate(all_labels) if l == label]
-
-        gt_points  = X_gt_pca[indices]
-        img_points = X_img_pca[indices]
-
-        # IMG_HIDDEN（教師）▽
-        plt.scatter(
-            gt_points[:, 0], gt_points[:, 1],
-            marker='^', s=50,
-            color=colors[i], 
-            label=label, alpha=0.9
-        )
-
-        # my_hidden（予測）〇
-        plt.scatter(
-            img_points[:, 0], img_points[:, 1],
-            marker='o', s=20,
-            color=colors[i], alpha=0.9
-        )
-
-        # 対応線
-        for j in range(len(indices)):
-            plt.plot(
-                [gt_points[j, 0], img_points[j, 0]],
-                [gt_points[j, 1], img_points[j, 1]],
-                color=colors[i],
-                linewidth=0.4,
-                alpha=0.8
-            )
-
-    # グラフの装飾
-    plt.title(f"IMG_HIDDEN and my_hidden\nJoint Latent Space (Epoch {epoch+1} train)\n△:IMG_HIDDEN | 〇:my_hidden", fontsize=16)
-    plt.xlabel(f"PC1 (Contribution: {pca.explained_variance_ratio_[0]:.2f})")
-    plt.ylabel(f"PC2 (Contribution: {pca.explained_variance_ratio_[1]:.2f})")
-    plt.grid(True)
-    
-    # 凡例 (画像のみ表示)
-    # 重複を除くための処理
-    from matplotlib.lines import Line2D
-    legend_elements = [Line2D([0], [0], marker='o', color='w', label=label,
-                          markerfacecolor=colors[i], markersize=10) for i, label in enumerate(unique_labels)]
-    plt.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
-    
-    plt.tight_layout()
-    
-    # 保存
-    save_path = os.path.join(f"figure/{nums}/train/ono_img_ver6", f"epoch{epoch+1}_trainimagehiddenPCA.png")
-    plt.savefig(save_path)
-    plt.close()
-    print(f"PCA plot saved: {save_path}")
-
-def draw_valid_pca_plot3(epoch, nums, all_labels,
-                  all_img_features, all_IMG_HIDDEN, all_ono_features):
-
-    # IMG_HIDDENのみでPCA空間を定義
-    X_gt = np.array(all_IMG_HIDDEN)   # (1400, 128)
-
-    # 念のため正規化（重要）
-    X_gt = X_gt / (np.linalg.norm(X_gt, axis=1, keepdims=True) + 1e-8)
-
-    pca = PCA(n_components=2)
-    pca.fit(X_gt)
-
-    X_gt_pca = pca.transform(X_gt)
-
-    X_img = np.array(all_img_features)
-    X_img = X_img / (np.linalg.norm(X_img, axis=1, keepdims=True) + 1e-8)
-
-    X_img_pca = pca.transform(X_img)
-
-    plt.figure(figsize=(12, 10))
-
-
-    unique_labels = sorted(set(all_labels))
-    # 色の準備 (タブローカラー20色などを使う)
-    colors = ["red","yellow", "gray","silver","rosybrown","firebrick",
-            "darksalmon","sienna","sandybrown","tan",
-                "gold","olivedrab","chartreuse","palegreen",
-                "darkgreen","lightseagreen","paleturquoise",
-                "deepskyblue","blue","pink","orange","crimson",
-                "mediumvioletred","plum","darkorchid","mediumpurple",
-                "chocolate","peru","yellow","y","aqua","lightsteelblue","linen","teal"]
-    
-
-    for i, label in enumerate(unique_labels):
-        indices = [j for j, l in enumerate(all_labels) if l == label]
-
-        gt_points  = X_gt_pca[indices]
-        img_points = X_img_pca[indices]
-
-        # IMG_HIDDEN（教師）▽
-        plt.scatter(
-            gt_points[:, 0], gt_points[:, 1],
-            marker='^', s=50,
-            color=colors[i], 
-            label=label, alpha=0.9
-        )
-
-        # my_hidden（予測）〇
-        plt.scatter(
-            img_points[:, 0], img_points[:, 1],
-            marker='o', s=20,
-            color=colors[i], alpha=0.9
-        )
-
-        # 対応線
-        for j in range(len(indices)):
-            plt.plot(
-                [gt_points[j, 0], img_points[j, 0]],
-                [gt_points[j, 1], img_points[j, 1]],
-                color=colors[i],
-                linewidth=0.4,
-                alpha=0.8
-            )
-
-    # グラフの装飾
-    plt.title(f"IMG_HIDDEN and my_hidden\nJoint Latent Space (Epoch {epoch+1} Valid)\n△:IMG_HIDDEN | 〇:my_hidden", fontsize=16)
-    plt.xlabel(f"PC1 (Contribution: {pca.explained_variance_ratio_[0]:.2f})")
-    plt.ylabel(f"PC2 (Contribution: {pca.explained_variance_ratio_[1]:.2f})")
-    plt.grid(True)
-    
-    # 凡例 (画像のみ表示)
-    # 重複を除くための処理
-    from matplotlib.lines import Line2D
-    legend_elements = [Line2D([0], [0], marker='o', color='w', label=label,
-                          markerfacecolor=colors[i], markersize=10) for i, label in enumerate(unique_labels)]
-    plt.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
-    
-    plt.tight_layout()
-    
-    # 保存
-    save_path = os.path.join(f"figure/{nums}/train/ono_img_ver6", f"epoch{epoch+1}_validimagehiddenPCA.png")
-    plt.savefig(save_path)
-    plt.close()
-    print(f"PCA plot saved: {save_path}")
-
-
+    # print(f"PCA plot saved: {save_path}")
 
 def select_subset_from_combined(combined_numpy, n_labels=14, n_samples_per_label=100, n_subset=10): #2400サンプルの78848次元の共分散行列の計算は重たいので、数サンプルピックする関数
     """
