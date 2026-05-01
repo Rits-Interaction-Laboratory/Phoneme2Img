@@ -1,3 +1,5 @@
+#1対多の学習
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
