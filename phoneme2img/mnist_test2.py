@@ -409,7 +409,7 @@ for epoch in range(1, epochs + 1):
         # KLD (正則化項)
         KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / data.size(0)
         
-        loss = recon_loss + KLD * 0.1
+        loss = recon_loss + KLD * 0.01
         loss.backward()
         optimizer.step()
         train_loss += loss.item()

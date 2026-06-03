@@ -1,7 +1,6 @@
 """
 入力画像対±1,同じ数字
-MSEが最小の100個を無理矢理分割してLoss計算するパターン
-！！これは使えないコード（意味ない）！！
+席取りLossのパターン
 """
 
 import torch
@@ -116,47 +115,125 @@ def update_digit_first_occurrence(labels, mu, z_100):
             "z": z_100[:, idx, :].detach().cpu()
         }
 
-# # 300個のうち上位100個の平均を損失として返す
+
+# 席取りLoss(MSE)
 # def compute_related_digit_loss(recon_current, related_images):
 #     """
 #     recon_current: (100, 784)
-#     related_images: (3, 784)
+#     related_images: (3, 784)  -> [digit-1, digit, digit+1]
+#     300個のMSEを小さい順に並べ、1つのベクトルから1つだけ選びながら
+#     same=34, minus1=33, plus1=33 を満たす。
 #     """
-#     # 100個の生成画像 × 3つの関連画像 = 300個のMSE
 #     diff = recon_current.unsqueeze(1) - related_images.unsqueeze(0)  # (100, 3, 784)
 #     mse = torch.sum(diff * diff, dim=2)  # (100, 3)
-#     mse_flat = mse.view(-1)  # (300,) ← ここがポイント1
-    
-#     # 300個の中から最小の100個を選ぶ
-#     top100 = torch.topk(mse_flat, k=100, largest=False).values
-#     loss = top100.mean()  # ← ここがポイント2
-#     return loss
+#     mse_flat = mse.view(-1)  # (300,)
 
-# 席取らないLoss
+#     sorted_indices = torch.argsort(mse_flat)
+
+#     quotas = [33, 34, 33]  # rel_idx 0: digit-1, 1: same, 2: digit+1
+#     selected_losses = []
+#     selected_recons = torch.zeros(recon_current.size(0), dtype=torch.bool, device=recon_current.device)
+
+#     for idx in sorted_indices:
+#         idx_int = int(idx)
+#         recon_idx = idx_int // 3
+#         rel_idx = idx_int % 3
+
+#         if selected_recons[recon_idx]:
+#             continue
+#         if quotas[rel_idx] <= 0:
+#             continue
+
+#         selected_losses.append(mse_flat[idx])
+#         selected_recons[recon_idx] = True
+#         quotas[rel_idx] -= 1
+
+#         if len(selected_losses) == recon_current.size(0):
+#             break
+
+#     return torch.stack(selected_losses).mean()
+
 def compute_related_digit_loss(recon_current, related_images):
-    """
-    recon_current: (100, 784)
-    related_images: (3, 784), get_related_digits() による順序は
-      [digit-1, digit, digit+1]
-    上位34個は same digit、次の33個は +1、残り33個は -1 の損失を使う
-    """
-    diff = recon_current.unsqueeze(1) - related_images.unsqueeze(0)  # (100, 3, 784)
-    mse = torch.sum(diff * diff, dim=2)  # (100, 3)
+    diff = recon_current.unsqueeze(1) - related_images.unsqueeze(0)  # (100,3,784)
+    mse = torch.sum(diff * diff, dim=2)  # (100,3)
 
-    same_mse = mse[:, 1]      # same digit
-    plus_mse = mse[:, 2]      # digit + 1
-    minus_mse = mse[:, 0]     # digit - 1
+    orders = [torch.argsort(mse[:, r]) for r in range(3)]
+    quotas = [33, 34, 33]
+    ptr = [0, 0, 0]
+    selected_losses = []
+    selected_recons = torch.zeros(recon_current.size(0), dtype=torch.bool, device=recon_current.device)
+    inf = float('inf')
 
-    order = torch.argsort(same_mse)  # same digit に近い順
-    top34 = order[:34]
-    mid33 = order[34:67]
-    last33 = order[67:]
+    def current_value(r):
+        while ptr[r] < 100 and selected_recons[orders[r][ptr[r]]]:
+            ptr[r] += 1
+        if ptr[r] >= 100:
+            return inf
+        return mse[orders[r][ptr[r]], r].item()
 
-    loss_same = same_mse[top34].mean()
-    loss_plus = plus_mse[mid33].mean()
-    loss_minus = minus_mse[last33].mean()
+    while len(selected_losses) < 100:
+        best_rel = None
+        best_val = inf
+        for r in range(3):
+            if quotas[r] <= 0:
+                continue
+            val = current_value(r)
+            if val < best_val:
+                best_val = val
+                best_rel = r
+        if best_rel is None:
+            break
 
-    return (loss_same + loss_plus + loss_minus) / 3.0
+        recon_idx = int(orders[best_rel][ptr[best_rel]])
+        if selected_recons[recon_idx]:
+            ptr[best_rel] += 1
+            continue
+
+        selected_losses.append(mse[recon_idx, best_rel])
+        selected_recons[recon_idx] = True
+        quotas[best_rel] -= 1
+        ptr[best_rel] += 1
+
+    return torch.stack(selected_losses).mean()
+
+# # 席取りLoss(MSE)をBCEに変更
+# def compute_related_digit_loss(recon_current, related_images):
+#     """
+#     recon_current: (100, 784)
+#     related_images: (3, 784)  -> [digit-1, digit, digit+1]
+#     300個のBCEを小さい順に並べ、1つのベクトルから1つだけ選びながら
+#     same=34, minus1=33, plus1=33 を満たす。
+#     """
+#     # BCEを計算 (ピクセルごと)
+#     bce = F.binary_cross_entropy(recon_current.unsqueeze(1).expand(-1, 3, -1), 
+#                                   related_images.unsqueeze(0).expand(recon_current.size(0), -1, -1),
+#                                   reduction='none').sum(dim=2)  # (100, 3)
+#     bce_flat = bce.view(-1)  # (300,)
+
+#     sorted_indices = torch.argsort(bce_flat)
+
+#     quotas = [33, 34, 33]  # rel_idx 0: digit-1, 1: same, 2: digit+1
+#     selected_losses = []
+#     selected_recons = torch.zeros(recon_current.size(0), dtype=torch.bool, device=recon_current.device)
+
+#     for idx in sorted_indices:
+#         idx_int = int(idx)
+#         recon_idx = idx_int // 3
+#         rel_idx = idx_int % 3
+
+#         if selected_recons[recon_idx]:
+#             continue
+#         if quotas[rel_idx] <= 0:
+#             continue
+
+#         selected_losses.append(bce_flat[idx])
+#         selected_recons[recon_idx] = True
+#         quotas[rel_idx] -= 1
+
+#         if len(selected_losses) == recon_current.size(0):
+#             break
+
+#     return torch.stack(selected_losses).mean()
 
 def plot_latent_space(mu, z_samples, epoch, label):
     """
@@ -198,44 +275,42 @@ def plot_latent_space(mu, z_samples, epoch, label):
     plt.savefig(save_path)
     plt.close()
 
-
-def plot_output_pca_fixed(recon_100, target_img, input_digit, epoch):
+def select_top100_recon_labels(recon_current, related_images):
     """
-    出力空間のPCA: 選ばれた100個の生成画像をPCA投影し、ターゲット画像との距離を可視化
-    すべての点を同じ色（入力数字の色）で表示
+    席取りLossの場合、選ばれた100個のベクトルに対応する
+    関連数字ラベル (0:digit-1, 1:same, 2:digit+1) を返す
     """
-    pca = PCA(n_components=2)
-    recon_plot = recon_100.detach().cpu().numpy()
-    target_plot = target_img.detach().cpu().numpy().reshape(1, -1)
+    diff = recon_current.unsqueeze(1) - related_images.unsqueeze(0)  # (100, 3, 784)
+    mse = torch.sum(diff * diff, dim=2)  # (100, 3)
+    mse_flat = mse.view(-1)  # (300,)
 
-    combined_data = np.vstack([recon_plot, target_plot])
-    pca_res = pca.fit_transform(combined_data)
+    sorted_indices = torch.argsort(mse_flat)
+    quotas = [33, 34, 33]
+    selected_labels = []
+    selected_recons = torch.zeros(recon_current.size(0), dtype=torch.bool, device=recon_current.device)
 
-    recon_pca = pca_res[: recon_plot.shape[0]]
-    target_pca = pca_res[recon_plot.shape[0]]
+    for idx in sorted_indices:
+        idx_int = int(idx)
+        recon_idx = idx_int // 3
+        rel_idx = idx_int % 3
 
-    plt.figure(figsize=(8, 8))
-    plt.gca().set_aspect('equal', adjustable='box')
+        if selected_recons[recon_idx]:
+            continue
+        if quotas[rel_idx] <= 0:
+            continue
 
-    cmap = plt.get_cmap('tab10')
-    color = cmap(int(input_digit))
+        selected_labels.append(rel_idx)
+        selected_recons[recon_idx] = True
+        quotas[rel_idx] -= 1
 
-    # 100個のベクトルを入力数字の色で表示
-    plt.scatter(recon_pca[:, 0], recon_pca[:, 1],
-                c=[color], alpha=0.5, s=30, label=f'Generated from Digit {input_digit}')
+        if len(selected_labels) == recon_current.size(0):
+            break
 
-    # ターゲット画像を黒いバツで表示
-    plt.scatter(target_pca[0], target_pca[1],
-                c='black', marker='^', s=200, label='Target Image')
+    # 不足分を0で埋める（念のため）
+    while len(selected_labels) < recon_current.size(0):
+        selected_labels.append(0)
 
-    plt.title(f"Output PCA - Digit {input_digit} (epoch: {epoch})")
-    plt.xlabel("PC1")
-    plt.ylabel("PC2")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig("mnist_test2.png")
-    plt.close()
+    return np.array(selected_labels[:recon_current.size(0)])
 
 
 def plot_output_pca(recon_100, target_img, related_labels, epoch):
@@ -281,6 +356,51 @@ def plot_output_pca(recon_100, target_img, related_labels, epoch):
     plt.savefig(os.path.join(f"mnist_test2.png"))
     plt.close()
 
+# def plot_latent_space_all_digits(mu, z_samples, labels, epoch):
+#     """
+#     mnist_test4.png: 各データのmuとその周囲のz(100個)を色分けして表示
+#     """
+#     plt.figure(figsize=(12, 10))
+#     plt.xlim([-5.0, 5.0])
+#     plt.ylim([-5.0, 5.0])
+#     plt.gca().set_aspect('equal', adjustable='box')
+    
+#     cmap = plt.get_cmap('tab10')
+#     mu_np = mu.detach().cpu().numpy()
+#     # z_samplesの形状を (batch_size, 100, latent_dim) に変換して扱いやすくする
+#     z_samples_np = z_samples.permute(1, 0, 2).detach().cpu().numpy()
+#     labels_np = labels.cpu().numpy()
+
+# # 0から9までの各数字について1つずつデータを探す
+#     for digit in range(10):
+#         # バッチの中から、現在のdigit（0, 1, 2...）に一致するインデックスを探す
+#         indices = np.where(labels_np == digit)[0]
+        
+#         if len(indices) > 0:
+#             # 見つかった場合、その中の最初のデータ（代表1個）を使用
+#             target_idx = indices[0]
+#             color = cmap(digit)
+            
+#             # 代表データのサンプリング点100個をプロット (雲のように表示)
+#             plt.scatter(z_samples_np[target_idx, :, 0], z_samples_np[target_idx, :, 1], 
+#                         color=color, alpha=0.9, s=10, edgecolors='none', label=f'Digit {digit} (z)')
+            
+#             # 代表データの中心μをプロット (バツ印)
+#             plt.scatter(mu_np[target_idx, 0], mu_np[target_idx, 1], 
+#                         color=color, marker='X', s=200, 
+#                         edgecolors='black', linewidths=1.5, zorder=10)
+#     # 凡例用のダミープロット (各クラス1つずつ)
+#     for digit in range(10):
+#         plt.scatter([], [], color=cmap(digit), label=f'Digit {digit}')
+
+#     plt.title(f"Latent Space All Digits (epoch: {epoch})")
+#     plt.xlabel("z1")
+#     plt.ylabel("z2")
+#     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+#     plt.grid(True, alpha=0.3)
+    
+#     plt.savefig("mnist_test4.png")
+#     plt.close()
 
 def plot_latent_space_all_digits(mu, z_samples, labels, epoch):
     """
@@ -386,7 +506,6 @@ def get_related_digits(digit):
     """
     return [(digit - 1) % 10, digit, (digit + 1) % 10]
 
-
 def sample_related_images(related_digits):
     """
     関連数字からランダムに1枚ずつ画像をサンプリング
@@ -397,44 +516,21 @@ def sample_related_images(related_digits):
         images.append(label_images[d][idx])
     return torch.stack(images).to(device)
 
-
+# 席取りLossのとき
 def sample_related_images_batch(labels):
     """
     バッチ内の各サンプルについて related_images をまとめて返す
     shape: (batch, 3, 784)
     """
-    labels = labels.to(device)
-    related_digits = torch.stack([
-        (labels - 1) % 10,
-        labels,
-        (labels + 1) % 10
-    ], dim=1)  # (batch, 3)
-
-    batch_related = torch.empty(labels.size(0), 3, 784, device=device)
-
-    for rel_idx in range(3):
-        digits = related_digits[:, rel_idx]  # (batch,)
-        for d in range(10):
-            mask = digits == d
-            if not mask.any():
-                continue
-            n = mask.sum().item()
-            idx = torch.randint(len(label_images[d]), (n,), device=device)
-            batch_related[mask, rel_idx] = label_images[d][idx]
-
-    return batch_related
-
-def select_related_labels_non_seating(recon_current, related_images):
-    """
-    席取らないLoss用: 各ベクトルに対して、3つの関連画像のどれに一番近いかを返す
-    """
-    diff = recon_current.unsqueeze(1) - related_images.unsqueeze(0)  # (100, 3, 784)
-    mse = torch.sum(diff * diff, dim=2)  # (100, 3)
-    
-    # 各ベクトルについて、3つの関連画像のうち最小MSEのインデックスを取得
-    min_indices = torch.argmin(mse, dim=1)  # (100,)
-    
-    return min_indices.cpu().numpy()
+    batch_related = []
+    for digit in labels.tolist():
+        related_digits = get_related_digits(int(digit))
+        imgs = torch.stack([
+            label_images[d][torch.randint(len(label_images[d]), (1,), device=device).item()]
+            for d in related_digits
+        ])
+        batch_related.append(imgs)
+    return torch.stack(batch_related, dim=0)
 
 
 # ==========================================
@@ -442,6 +538,7 @@ def select_related_labels_non_seating(recon_current, related_images):
 # ==========================================
 print(f"Training VAE with 1-to-Many relationship on {device}...")
 
+fixed_target_img = None
 for epoch in range(1, epochs + 1):
     model.train()
     train_loss = 0
@@ -449,11 +546,13 @@ for epoch in range(1, epochs + 1):
     last_recon_100 = None
     last_target_img = None
     last_selected_labels = None
-    last_related_images = None  # 追加
-    last_input_digit = None  # 追加
 
     for batch_idx, (data, labels) in enumerate(train_loader):
         data = data.to(device).view(-1, 784)
+
+        if epoch == 1 and batch_idx == 0:
+            fixed_target_img = data[0:1, :].clone().detach()
+
         optimizer.zero_grad()
 
         mu, logvar = model.encode(data)
@@ -461,34 +560,37 @@ for epoch in range(1, epochs + 1):
         update_digit_first_occurrence(labels, mu, z_100)
         recon_100 = model.decode(z_100.view(-1, latent_dim)).view(100, -1, 784)
 
+        related_images_batch = sample_related_images_batch(labels)
+
         total_recon_loss = 0
         for batch_data_idx in range(data.size(0)):
-            input_digit = labels[batch_data_idx].item()
-            related_digits = get_related_digits(input_digit)
-
-            related_images_tensor = sample_related_images(related_digits)
+            related_images_tensor = related_images_batch[batch_data_idx]
             recon_current = recon_100[:, batch_data_idx, :]
 
             if batch_data_idx == 0:
-                last_recon_100 = recon_current.detach()
-                last_target_img = data[batch_data_idx:batch_data_idx+1, :].detach()
-                last_input_digit = input_digit
+                last_selected_labels = select_top100_recon_labels(recon_current, related_images_tensor)
             loss_current = compute_related_digit_loss(recon_current, related_images_tensor)
             total_recon_loss += loss_current
 
+        last_recon_100 = recon_100[:, 0, :].detach()
+        last_target_img = data[0:1, :].detach()
+
         recon_loss = total_recon_loss / data.size(0)
         KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / data.size(0)
-        loss = recon_loss + KLD * 1
+        loss = recon_loss + KLD * 0.01
         loss.backward()
         optimizer.step()
         train_loss += loss.item()
 
-    if last_input_digit is not None:
-        plot_output_pca_fixed(last_recon_100, last_target_img, last_input_digit, epoch)
-    
+        last_target_img = fixed_target_img  # 毎エポック同じものを使う
+
+    if last_selected_labels is not None:
+        plot_output_pca(last_recon_100, last_target_img, last_selected_labels, epoch)
+
+    # これらはエポック末に一回だけ
+    plot_latent_space(mu, z_100, batch_idx, labels[0].item())
     generate_digit_variations(epoch, target_digit=8, num_variants=10)
     plot_latent_space_all_digits(mu, z_100, labels, epoch)
     print(f'Epoch {epoch}, Avg Loss: {train_loss / len(train_loader):.4f}')
-    
 
 print("Training Complete!")
