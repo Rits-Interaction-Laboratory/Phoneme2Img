@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# MNIST data
+data/
+
+# TensorBoard logs
+runs/
+
+# Generated images
+img_*/
+
+# Models
+*.pth
+*.pt
