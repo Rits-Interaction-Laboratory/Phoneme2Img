@@ -66,6 +66,35 @@ def _padded_limits(xy, pad_ratio=0.08):
     return (mins[0] - pad[0], maxs[0] + pad[0]), (mins[1] - pad[1], maxs[1] + pad[1])
 
 
+def _annotate_digit_centers(ax, xy, labels, axis_limits):
+    xlim, ylim = axis_limits
+    visible = (
+        (xy[:, 0] >= xlim[0])
+        & (xy[:, 0] <= xlim[1])
+        & (xy[:, 1] >= ylim[0])
+        & (xy[:, 1] <= ylim[1])
+    )
+    for digit in range(10):
+        mask = (labels == digit) & visible
+        if not np.any(mask):
+            mask = labels == digit
+        if not np.any(mask):
+            continue
+        center = np.median(xy[mask], axis=0)
+        ax.text(
+            center[0],
+            center[1],
+            str(digit),
+            ha="center",
+            va="center",
+            fontsize=24,
+            fontweight="bold",
+            color="black",
+            bbox={"boxstyle": "round,pad=0.18", "facecolor": "white", "edgecolor": "black", "alpha": 0.78},
+            zorder=20,
+        )
+
+
 def _plot_latent_mu(mu_np, labels_np, out_path, pca, axis_limits):
     xy = pca.transform(mu_np)
 
@@ -84,6 +113,7 @@ def _plot_latent_mu(mu_np, labels_np, out_path, pca, axis_limits):
     ax.set_xlim(axis_limits[0])
     ax.set_ylim(axis_limits[1])
     ax.set_aspect("equal", adjustable="box")
+    _annotate_digit_centers(ax, xy, labels_np, axis_limits)
     plt.title("Encoded mu distribution by digit")
     plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0] * 100:.1f}%)")
     plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1] * 100:.1f}%)")
@@ -114,6 +144,7 @@ def _plot_latent_samples(z_np, labels_np, out_path, pca, axis_limits):
     ax.set_xlim(axis_limits[0])
     ax.set_ylim(axis_limits[1])
     ax.set_aspect("equal", adjustable="box")
+    _annotate_digit_centers(ax, xy, repeated_labels, axis_limits)
     plt.title("Sampled latent z distribution by input digit (mu PCA axes)")
     plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0] * 100:.1f}%)")
     plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1] * 100:.1f}%)")
