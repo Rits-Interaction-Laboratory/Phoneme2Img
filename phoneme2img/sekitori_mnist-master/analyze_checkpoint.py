@@ -58,8 +58,7 @@ def _fit_pca(points, max_points=10000):
     return pca
 
 
-def _plot_latent_mu(mu_np, labels_np, out_path):
-    pca = _fit_pca(mu_np)
+def _plot_latent_mu(mu_np, labels_np, out_path, pca):
     xy = pca.transform(mu_np)
 
     plt.figure(figsize=(10, 8))
@@ -84,10 +83,9 @@ def _plot_latent_mu(mu_np, labels_np, out_path):
     plt.close()
 
 
-def _plot_latent_samples(z_np, labels_np, out_path):
+def _plot_latent_samples(z_np, labels_np, out_path, pca):
     flat_z = z_np.reshape(-1, z_np.shape[-1])
     repeated_labels = np.repeat(labels_np, z_np.shape[1])
-    pca = _fit_pca(flat_z)
     xy = pca.transform(flat_z)
 
     plt.figure(figsize=(10, 8))
@@ -102,7 +100,7 @@ def _plot_latent_samples(z_np, labels_np, out_path):
             label=str(digit),
         )
     plt.gca().set_aspect("equal", adjustable="datalim")
-    plt.title("Sampled latent z distribution by input digit")
+    plt.title("Sampled latent z distribution by input digit (mu PCA axes)")
     plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0] * 100:.1f}%)")
     plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1] * 100:.1f}%)")
     plt.grid(True, alpha=0.25)
@@ -178,8 +176,14 @@ def analyze(checkpoint_path, out_dir, per_digit, z_samples, grid_samples):
     decoded_np = decoded.cpu().numpy()
 
     epoch = ckpt.get("epoch", "unknown")
-    _plot_latent_mu(mu_np, labels_np, os.path.join(out_dir, f"epoch_{epoch}_latent_mu_pca.png"))
-    _plot_latent_samples(z_np, labels_np, os.path.join(out_dir, f"epoch_{epoch}_latent_z_samples_pca.png"))
+    latent_pca = _fit_pca(mu_np)
+    _plot_latent_mu(mu_np, labels_np, os.path.join(out_dir, f"epoch_{epoch}_latent_mu_pca.png"), latent_pca)
+    _plot_latent_samples(
+        z_np,
+        labels_np,
+        os.path.join(out_dir, f"epoch_{epoch}_latent_z_samples_pca.png"),
+        latent_pca,
+    )
 
     src_images = []
     grid_generated = []
