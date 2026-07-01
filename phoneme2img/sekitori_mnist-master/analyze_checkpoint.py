@@ -58,7 +58,15 @@ def _fit_pca(points, max_points=10000):
     return pca
 
 
-def _plot_latent_mu(mu_np, labels_np, out_path, pca):
+def _padded_limits(xy, pad_ratio=0.08):
+    mins = xy.min(axis=0)
+    maxs = xy.max(axis=0)
+    span = np.maximum(maxs - mins, 1e-6)
+    pad = span * pad_ratio
+    return (mins[0] - pad[0], maxs[0] + pad[0]), (mins[1] - pad[1], maxs[1] + pad[1])
+
+
+def _plot_latent_mu(mu_np, labels_np, out_path, pca, axis_limits):
     xy = pca.transform(mu_np)
 
     plt.figure(figsize=(10, 8))
@@ -72,7 +80,10 @@ def _plot_latent_mu(mu_np, labels_np, out_path, pca):
             color=DIGIT_COLORS[digit],
             label=str(digit),
         )
-    plt.gca().set_aspect("equal", adjustable="datalim")
+    ax = plt.gca()
+    ax.set_xlim(axis_limits[0])
+    ax.set_ylim(axis_limits[1])
+    ax.set_aspect("equal", adjustable="box")
     plt.title("Encoded mu distribution by digit")
     plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0] * 100:.1f}%)")
     plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1] * 100:.1f}%)")
@@ -83,7 +94,7 @@ def _plot_latent_mu(mu_np, labels_np, out_path, pca):
     plt.close()
 
 
-def _plot_latent_samples(z_np, labels_np, out_path, pca):
+def _plot_latent_samples(z_np, labels_np, out_path, pca, axis_limits):
     flat_z = z_np.reshape(-1, z_np.shape[-1])
     repeated_labels = np.repeat(labels_np, z_np.shape[1])
     xy = pca.transform(flat_z)
@@ -99,7 +110,10 @@ def _plot_latent_samples(z_np, labels_np, out_path, pca):
             color=DIGIT_COLORS[digit],
             label=str(digit),
         )
-    plt.gca().set_aspect("equal", adjustable="datalim")
+    ax = plt.gca()
+    ax.set_xlim(axis_limits[0])
+    ax.set_ylim(axis_limits[1])
+    ax.set_aspect("equal", adjustable="box")
     plt.title("Sampled latent z distribution by input digit (mu PCA axes)")
     plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0] * 100:.1f}%)")
     plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1] * 100:.1f}%)")
@@ -177,12 +191,20 @@ def analyze(checkpoint_path, out_dir, per_digit, z_samples, grid_samples):
 
     epoch = ckpt.get("epoch", "unknown")
     latent_pca = _fit_pca(mu_np)
-    _plot_latent_mu(mu_np, labels_np, os.path.join(out_dir, f"epoch_{epoch}_latent_mu_pca.png"), latent_pca)
+    latent_axis_limits = _padded_limits(latent_pca.transform(mu_np))
+    _plot_latent_mu(
+        mu_np,
+        labels_np,
+        os.path.join(out_dir, f"epoch_{epoch}_latent_mu_pca.png"),
+        latent_pca,
+        latent_axis_limits,
+    )
     _plot_latent_samples(
         z_np,
         labels_np,
         os.path.join(out_dir, f"epoch_{epoch}_latent_z_samples_pca.png"),
         latent_pca,
+        latent_axis_limits,
     )
 
     src_images = []
