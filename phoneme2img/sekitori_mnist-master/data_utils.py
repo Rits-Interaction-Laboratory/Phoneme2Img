@@ -33,17 +33,30 @@ def sample_related_images(related_digits):
     return torch.stack(images).to(device)
 
 
-def sample_related_images_batch(labels):
+def sample_related_images_batch(labels, inputs=None):
     """
     バッチ内の各サンプルについて related_images をまとめて返す
+    inputsを渡した場合、same digitの教師は入力画像そのものを避けてランダム選択する
     shape: (batch, 3, 784)
     """
     batch_related = []
-    for digit in labels.tolist():
+    if inputs is not None:
+        inputs = inputs.to(device).view(-1, 784)
+
+    for i, digit in enumerate(labels.tolist()):
         related_digits = get_related_digits(int(digit))
-        imgs = torch.stack([
-            label_images[d][torch.randint(len(label_images[d]), (1,), device=device).item()]
-            for d in related_digits
-        ])
+        images = []
+        for d in related_digits:
+            candidates = label_images[d]
+            if inputs is not None and d == int(digit):
+                same_as_input = torch.all(candidates == inputs[i], dim=1)
+                candidates = candidates[~same_as_input]
+                if candidates.size(0) == 0:
+                    candidates = label_images[d]
+
+            idx = torch.randint(candidates.size(0), (1,), device=device).item()
+            images.append(candidates[idx])
+
+        imgs = torch.stack(images)
         batch_related.append(imgs)
     return torch.stack(batch_related, dim=0)

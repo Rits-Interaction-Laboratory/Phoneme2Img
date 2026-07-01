@@ -1,0 +1,9 @@
+checkpoint: /Users/shimadalocal/src/Phoneme2Img/phoneme2img/sekitori_mnist-master/checkpoints/random_teacher/2026-07-01/epoch_0200.pt
+epoch: 200
+latent_dim: 4
+per_digit: 200
+z_samples: 20
+train_mse: 45.10745108127594
+train_kld: 4.033856101334095
+val_mse: 46.98872756958008
+val_kld: 3.8014036246708462

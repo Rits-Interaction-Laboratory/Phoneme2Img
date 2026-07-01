@@ -61,7 +61,7 @@ for epoch in range(1, epochs + 1):
         z_n = model.reparameterize(mu, logvar, num_samples=num_samples)
         recon_n = model.decode(z_n.view(-1, latent_dim)).view(num_samples, -1, 784)
 
-        related_images_batch = sample_related_images_batch(labels)
+        related_images_batch = sample_related_images_batch(labels, inputs=data)
         pred = recon_n.permute(1, 0, 2)
         target_imgs = related_images_batch
 
@@ -95,7 +95,7 @@ for epoch in range(1, epochs + 1):
             z_v = model.reparameterize(mu_v, logvar_v, num_samples=num_samples)
             recon_v = model.decode(z_v.view(-1, latent_dim)).view(num_samples, -1, 784)
 
-            related_v = sample_related_images_batch(labels_v)
+            related_v = sample_related_images_batch(labels_v, inputs=data_v)
             pred_v = recon_v.permute(1, 0, 2)
             losses_v, *_ = sekitori_loss_sum(pred_v, related_v)
 
@@ -125,7 +125,7 @@ for epoch in range(1, epochs + 1):
         z_tr = model.reparameterize(mu_tr, logvar_tr, num_samples=num_samples)
         recon_tr = model.decode(z_tr.view(-1, latent_dim)).view(num_samples, 1, 784)
         pred_tr = recon_tr.permute(1, 0, 2)
-        related_tr = sample_related_images_batch(torch.tensor([TRACK_DIGIT]))
+        related_tr = sample_related_images_batch(torch.tensor([TRACK_DIGIT]), inputs=track_image.to(device))
         _, _, _, indices_close_tr, indices_tr = sekitori_loss_sum(pred_tr, related_tr)
         track_selected = build_selected_labels(indices_tr[0], num_samples)
         track_close = indices_close_tr[0]

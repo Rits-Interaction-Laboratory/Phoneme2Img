@@ -1,7 +1,10 @@
 """
-席取りLoss — 教師固定版
-各数字の先頭1枚を全バッチ・全エポックで固定教師として使用
+席取りLoss — ランダム教師版
+各入力について、前後と同じ数字の教師画像を毎回ランダムに選ぶ
 """
+
+import datetime
+import os
 
 import torch
 import torch.optim as optim
@@ -16,7 +19,7 @@ from config import (
 )
 from model import VAE
 from loss import sekitori_loss_sum
-from data_utils import get_fixed_related_images_batch as sample_related_images_batch, fixed_label_images
+from data_utils import sample_related_images_batch, fixed_label_images
 from visualize import (
     plot_latent_sekitori,
     plot_latent_close_teacher,
@@ -27,7 +30,13 @@ from visualize import (
     plot_batch_teachers,
 )
 import visualize
-visualize.set_img_root("img_fixed")
+visualize.set_img_root("img_random_teacher")
+
+CHECKPOINT_EVERY = 10
+_BASE = os.path.dirname(os.path.abspath(__file__))
+_RUN_DATE = datetime.date.today().strftime("%Y-%m-%d")
+CHECKPOINT_DIR = os.path.join(_BASE, "checkpoints", "random_teacher", _RUN_DATE)
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 
 def build_selected_labels(assignment, n):
@@ -40,14 +49,41 @@ def build_selected_labels(assignment, n):
 
 model = VAE(z_dim=latent_dim).to(device)
 optimizer = optim.Adam(model.parameters(), lr=lr)
-writer = SummaryWriter(log_dir="runs/vae_sekitori_fixed")
+writer = SummaryWriter(log_dir="runs/vae_sekitori_random_teacher")
 
-print(f"[Fixed Teachers] Training VAE on {device} | num_samples={num_samples} | track_digit={TRACK_DIGIT}")
+print(f"[Random Teachers] Training VAE on {device} | num_samples={num_samples} | track_digit={TRACK_DIGIT}")
+print(f"Checkpoints will be saved to: {CHECKPOINT_DIR}")
 
 _track_mask = (monitor_labels == TRACK_DIGIT)
 track_image = monitor_images[_track_mask][0:1]   # (1, 784)
 track_images = torch.stack([fixed_label_images[d] for d in range(10)]).to(device)  # (10, 784)
 track_labels = torch.arange(10, device=device)
+
+
+def save_checkpoint(epoch, train_mse, train_kld, val_mse, val_kld):
+    path = os.path.join(CHECKPOINT_DIR, f"epoch_{epoch:04d}.pt")
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "metrics": {
+                "train_mse": train_mse,
+                "train_kld": train_kld,
+                "val_mse": val_mse,
+                "val_kld": val_kld,
+            },
+            "config": {
+                "latent_dim": latent_dim,
+                "num_samples": num_samples,
+                "beta": beta,
+                "lr": lr,
+                "track_digit": TRACK_DIGIT,
+            },
+        },
+        path,
+    )
+    print(f"Saved checkpoint: {path}")
 
 
 for epoch in range(1, epochs + 1):
@@ -65,7 +101,7 @@ for epoch in range(1, epochs + 1):
         z_n = model.reparameterize(mu, logvar, num_samples=num_samples)
         recon_n = model.decode(z_n.view(-1, latent_dim)).view(num_samples, -1, 784)
 
-        related_images_batch = sample_related_images_batch(labels)
+        related_images_batch = sample_related_images_batch(labels, inputs=data)
         pred = recon_n.permute(1, 0, 2)
         target_imgs = related_images_batch
 
@@ -99,7 +135,7 @@ for epoch in range(1, epochs + 1):
             z_v = model.reparameterize(mu_v, logvar_v, num_samples=num_samples)
             recon_v = model.decode(z_v.view(-1, latent_dim)).view(num_samples, -1, 784)
 
-            related_v = sample_related_images_batch(labels_v)
+            related_v = sample_related_images_batch(labels_v, inputs=data_v)
             pred_v = recon_v.permute(1, 0, 2)
             losses_v, *_ = sekitori_loss_sum(pred_v, related_v)
 
@@ -123,13 +159,22 @@ for epoch in range(1, epochs + 1):
         f"Val   MSE: {val_mse/n_val:.4f}  KLD: {val_kld/n_val:.4f}"
     )
 
+    if epoch % CHECKPOINT_EVERY == 0:
+        save_checkpoint(
+            epoch,
+            train_mse / n_train,
+            train_kld / n_train,
+            val_mse / n_val,
+            val_kld / n_val,
+        )
+
     # ===== 固定サンプルで潜在空間・教師割り当てを計算 =====
     with torch.no_grad():
         mu_tr, logvar_tr = model.encode(track_image.to(device))
         z_tr = model.reparameterize(mu_tr, logvar_tr, num_samples=num_samples)
         recon_tr = model.decode(z_tr.view(-1, latent_dim)).view(num_samples, 1, 784)
         pred_tr = recon_tr.permute(1, 0, 2)
-        related_tr = sample_related_images_batch(torch.tensor([TRACK_DIGIT]))
+        related_tr = sample_related_images_batch(torch.tensor([TRACK_DIGIT]), inputs=track_image.to(device))
         _, _, _, indices_close_tr, indices_tr = sekitori_loss_sum(pred_tr, related_tr)
         track_selected = build_selected_labels(indices_tr[0], num_samples)
         track_close = indices_close_tr[0]
@@ -158,7 +203,7 @@ for epoch in range(1, epochs + 1):
         z_tr = model.reparameterize(mu_tr, logvar_tr, num_samples=num_samples)
         recon_tr = model.decode(z_tr.view(-1, latent_dim)).view(num_samples, -1, 784)
         pred_tr = recon_tr.permute(1, 0, 2)
-        related_tr = sample_related_images_batch(track_labels).to(device)
+        related_tr = sample_related_images_batch(track_labels, inputs=track_images).to(device)
 
         _, _, _, indices_close_tr, indices_tr = sekitori_loss_sum(pred_tr, related_tr)
         track_selected = np.stack(

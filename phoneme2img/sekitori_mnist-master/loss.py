@@ -117,27 +117,46 @@ def sekitori_loss_sum(pred, target):
     for b in range(B):
         loss_matrix = loss_matrix_all[b]  # (N, T) — 参照のみ、再計算なし
 
-        # 2. predごとに最小の教師を記録（どの教師に近いか） 
+        # 2. predごとに最小の教師を記録（どの教師に近いか）
         min_loss, min_loss_idx = torch.min(loss_matrix, dim=1)
         indices_min_loss.append(min_loss_idx.detach().cpu().numpy())
 
-        # 3. predを各教師に割り当てる
-        sorted_gst = torch.argsort(min_loss)  # 最小loss順にpredを処理
-        sel_list = [[] for _ in range(T)] # 各教師に割り当てられたlossを格納
-        sel_indices_list = [[] for _ in range(T)]  # index
-        counts = torch.zeros(T, dtype=torch.long)
+        # 3. 空席のある教師だけを候補にし、その時点で最小MSEの(pred, teacher)を選ぶ
+        orders = [torch.argsort(loss_matrix[:, t]) for t in range(T)]
+        quotas = [K] * T
+        ptrs = [0] * T
+        selected = torch.zeros(N, dtype=torch.bool, device=pred.device)
+        sel_list = [[] for _ in range(T)]
+        sel_indices_list = [[] for _ in range(T)]
 
-        for g in sorted_gst:
-            prefs = torch.argsort(loss_matrix[g]) # このpredに対する教師の優先順位
-            for t in prefs:
-                ti = t.item()
-                if counts[ti] < K:
-                    sel_list[ti].append(loss_matrix[g, t])  # 勾配追跡可能
-                    sel_indices_list[ti].append(g.item())   # pred index
-                    counts[ti] += 1
-                    break
-            if torch.all(counts == K): # 全員割り当て終わったら終了
+        while sum(len(v) for v in sel_list) < N:
+            best_loss = float("inf")
+            best_pred = None
+            best_t = None
+
+            for t in range(T):
+                if quotas[t] <= 0:
+                    continue
+                while ptrs[t] < N and selected[int(orders[t][ptrs[t]])]:
+                    ptrs[t] += 1
+                if ptrs[t] >= N:
+                    continue
+
+                pred_idx = int(orders[t][ptrs[t]])
+                loss_value = loss_matrix[pred_idx, t].item()
+                if loss_value < best_loss:
+                    best_loss = loss_value
+                    best_pred = pred_idx
+                    best_t = t
+
+            if best_t is None:
                 break
+
+            selected[best_pred] = True
+            sel_list[best_t].append(loss_matrix[best_pred, best_t])  # 勾配追跡可能
+            sel_indices_list[best_t].append(best_pred)
+            quotas[best_t] -= 1
+            ptrs[best_t] += 1
 
         # 4. Tensorに変換
         chosen_losses = torch.stack([torch.stack(v) for v in sel_list])      # [T, K]
@@ -192,22 +211,41 @@ def sekitori_loss_worst_percent(pred, target, worst_percent=0.3):
         min_loss, min_loss_idx = torch.min(loss_matrix, dim=1)
         indices_min_loss.append(min_loss_idx.detach().cpu().numpy())
 
-        sorted_gst = torch.argsort(min_loss)
+        orders = [torch.argsort(loss_matrix[:, t]) for t in range(T)]
+        quotas = [K] * T
+        ptrs = [0] * T
+        selected = torch.zeros(N, dtype=torch.bool, device=pred.device)
         sel_list = [[] for _ in range(T)]
         sel_indices_list = [[] for _ in range(T)]
-        counts = torch.zeros(T, dtype=torch.long)
 
-        for g in sorted_gst:
-            prefs = torch.argsort(loss_matrix[g])
-            for t in prefs:
-                ti = t.item()
-                if counts[ti] < K:
-                    sel_list[ti].append(loss_matrix[g, t])
-                    sel_indices_list[ti].append(g.item())
-                    counts[ti] += 1
-                    break
-            if torch.all(counts == K):
+        while sum(len(v) for v in sel_list) < N:
+            best_loss = float("inf")
+            best_pred = None
+            best_t = None
+
+            for t in range(T):
+                if quotas[t] <= 0:
+                    continue
+                while ptrs[t] < N and selected[int(orders[t][ptrs[t]])]:
+                    ptrs[t] += 1
+                if ptrs[t] >= N:
+                    continue
+
+                pred_idx = int(orders[t][ptrs[t]])
+                loss_value = loss_matrix[pred_idx, t].item()
+                if loss_value < best_loss:
+                    best_loss = loss_value
+                    best_pred = pred_idx
+                    best_t = t
+
+            if best_t is None:
                 break
+
+            selected[best_pred] = True
+            sel_list[best_t].append(loss_matrix[best_pred, best_t])
+            sel_indices_list[best_t].append(best_pred)
+            quotas[best_t] -= 1
+            ptrs[best_t] += 1
 
         chosen_losses = torch.stack([torch.stack(v) for v in sel_list])  # [T, K]
         chosen_indices = np.array(sel_indices_list)
